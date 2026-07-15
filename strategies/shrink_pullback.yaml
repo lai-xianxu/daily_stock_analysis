@@ -11,7 +11,7 @@ required_tools:
   - analyze_trend
   - get_realtime_quote
 aliases: [缩量回踩, 回踩]
-default_router: true
+default_router: false
 default_priority: 40
 market_regimes: [trending_down, sideways]
 

@@ -33,6 +33,10 @@ from src.schemas.decision_action import (
     display_operation_advice_for_result,
     localize_action_label,
 )
+from src.schemas.strategy_signal import (
+    normalize_strategy_signal_payload,
+    strategy_signal_definition,
+)
 from src.utils.data_processing import (
     normalize_model_used,
     signal_attribution_has_content,
@@ -135,35 +139,49 @@ def render(
             r,
             report_language=report_language,
         )["action"]
-        display_advice = display_operation_advice_for_result(
+        legacy_display_advice = display_operation_advice_for_result(
             r,
             report_language=report_language,
         )
-        signal_action = {
-            "buy": "buy",
-            "add": "buy",
-            "hold": "hold",
-            "reduce": "reduce",
-            "sell": "sell",
-            "watch": "watch",
-            "avoid": "hold",
-            "alert": "sell",
-        }.get(display_action, display_action)
+        dashboard = r.dashboard if isinstance(r.dashboard, dict) else {}
+        strategy_signal = normalize_strategy_signal_payload(
+            dashboard.get("strategy_signal"),
+            report_language,
+        )
+        strategy_definition = strategy_signal_definition(
+            strategy_signal.get("signal_code") if strategy_signal else None
+        )
+        if strategy_signal and strategy_definition:
+            display_advice = strategy_signal["signal_label"]
+            signal_action = strategy_definition.action
+            display_bucket = strategy_definition.decision_type
+        else:
+            display_advice = legacy_display_advice
+            signal_action = {
+                "buy": "buy",
+                "add": "buy",
+                "hold": "hold",
+                "reduce": "reduce",
+                "sell": "sell",
+                "watch": "watch",
+                "avoid": "hold",
+                "alert": "sell",
+            }.get(display_action, display_action)
+            display_bucket = display_decision_type_for_result(r, report_language=report_language)
         _, se, _ = get_signal_level(signal_action or display_advice, r.sentiment_score, report_language)
         rn = get_localized_stock_name(r.name, r.code, report_language)
         sorted_enriched.append({
             "result": r,
             "signal_text": display_advice,
             "signal_emoji": se,
+            "strategy_signal": strategy_signal,
+            "display_decision_type": display_bucket,
             "stock_name": _escape_md(rn),
             "localized_operation_advice": display_advice,
             "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
         })
 
-    display_buckets = [
-        display_decision_type_for_result(r, report_language=report_language)
-        for r in results
-    ]
+    display_buckets = [entry["display_decision_type"] for entry in sorted_enriched]
     buy_count = sum(1 for bucket in display_buckets if bucket == "buy")
     sell_count = sum(1 for bucket in display_buckets if bucket == "sell")
     hold_count = len(display_buckets) - buy_count - sell_count

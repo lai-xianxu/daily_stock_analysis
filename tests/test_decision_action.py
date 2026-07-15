@@ -348,7 +348,7 @@ def test_build_action_fields_keeps_empty_action_without_advice_or_explicit_actio
         (28, "reduce", "reduce", "sell"),
         (38, "reduce", "reduce", "sell"),
         (42, "watch", "watch", "hold"),
-        (55, "watch", "watch", "hold"),
+        (55, "hold", "hold", "hold"),
         (60, "buy", "buy", "buy"),
         (66, "buy", "buy", "buy"),
         (72, "buy", "buy", "buy"),

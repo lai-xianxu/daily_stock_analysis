@@ -9,7 +9,16 @@
 {% set dash = e.result.dashboard or {} %}
 {% set core = (dash.get('core_conclusion') or {}) if dash else {} %}
 {% set one = (core.get('one_sentence') or e.result.analysis_summary or '')[:60] %}
+{% set strategy = e.strategy_signal or {} %}
+{% if strategy %}
+**{{ labels.strategy_signal_heading }} · {{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }} | {{ labels.strategy_confidence_label }} {{ strategy.get('confidence') or 'N/A' }} | {{ labels.score_label }} {{ e.result.sentiment_score }}
+{% if strategy.get('summary') %}> {{ strategy.get('summary') }}{% endif %}
+{% if strategy.get('reasons') %}**{{ labels.strategy_reasons_label }}**: {{ strategy.get('reasons')[:2]|join('; ') }}{% endif %}
+{% if strategy.get('upgrade_trigger') %}**{{ labels.strategy_upgrade_trigger_label }}**: {{ strategy.get('upgrade_trigger') }}{% endif %}
+{% if strategy.get('downgrade_trigger') %}**{{ labels.strategy_downgrade_trigger_label }}**: {{ strategy.get('downgrade_trigger') }}{% endif %}
+{% else %}
 **{{ e.stock_name }}({{ e.result.code }})** {{ e.signal_emoji }} {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ one }}
+{% endif %}
 {% endfor %}
 
 *{{ report_timestamp }}*

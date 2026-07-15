@@ -33,6 +33,7 @@ from src.market_context import get_market_role, get_market_guidelines
 from src.market_phase_prompt import format_market_phase_prompt_section
 from src.market_structure_prompt import format_market_structure_prompt_section
 from src.services.daily_market_context import format_daily_market_context_prompt_section
+from src.schemas.strategy_signal import MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH
 
 logger = logging.getLogger(__name__)
 
@@ -229,26 +230,38 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - `get_realtime_quote` 获取实时行情
 - `get_daily_history` 获取历史K线
 
-**第二阶段 · 技术与筹码**（等第一阶段结果返回后执行）
+**第二阶段 · 技术、价格与量能**（等第一阶段结果返回后执行）
 - `analyze_trend` 获取技术指标
+- `get_volume_analysis` 获取多周期量价特征
+
+**第三阶段 · 基本面、市场与行业**（等前两阶段完成后执行）
+- `get_stock_info` 获取公司与基本面信息
+- `get_market_indices` 获取大盘环境
+- `get_sector_rankings` 获取行业强弱
+
+**第四阶段 · 资金与筹码**（等前三阶段完成后执行）
+- `get_capital_flow` 获取资金流向
 - `get_chip_distribution` 获取筹码分布
 
-**第三阶段 · 情报搜索**（等前两阶段完成后执行）
+**第五阶段 · 情报搜索**（等前四阶段完成后执行）
 - `search_stock_news` 搜索最新资讯、减持、业绩预告等风险信号
 
-**第四阶段 · 生成报告**（所有数据就绪后，输出完整决策仪表盘 JSON）
+**第六阶段 · 生成报告**（所有数据就绪后，输出完整决策仪表盘 JSON）
 
 > ⚠️ 每阶段的工具调用必须完整返回结果后，才能进入下一阶段。禁止将不同阶段的工具合并到同一次调用中。
+> 系统上下文中已有且时效有效的数据视为该阶段已完成，只调用缺失维度对应的工具。
 {default_skill_policy_section}
 
 ## 规则
 
-1. **必须调用工具获取真实数据** — 绝不编造数字，所有数据必须来自工具返回结果。
+1. **必须使用真实数据** — 优先复用系统已预取数据，仅对缺失维度调用工具，绝不编造数字。
 2. **系统化分析** — 严格按工作流程分阶段执行，每阶段完整返回后再进入下一阶段，**禁止**将不同阶段的工具合并到同一次调用中。
 3. **应用交易技能** — 评估每个激活技能的条件，在报告中体现技能判断结果。
 4. **输出格式** — 最终响应必须是有效的决策仪表盘 JSON。
 5. **风险优先** — 必须排查风险（股东减持、业绩预警、监管问题）。
 6. **工具失败处理** — 记录失败原因，使用已有数据继续分析，不重复调用失败工具。
+
+""" + MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH.replace("{", "{{").replace("}", "}}") + """
 
 {skills_section}
 
@@ -263,6 +276,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
     "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
     "decision_type": "buy/hold/sell",
+    "action": "buy/add/hold/reduce/sell/watch/avoid/alert",
     "confidence_level": "高/中/低",
     "dashboard": {{
         "core_conclusion": {{
@@ -343,7 +357,11 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - ✅ 允许存在可控风险或次优入场点
 - ✅ 需要在报告中明确补充观察条件
 
-### 观望（40-59分）：
+### 适合持有（50-59分）：
+- ✅ 长期逻辑与主要结构保持正常
+- ✅ 暂无足够的进攻或退出确认
+
+### 继续观察（40-49分）：
 - ⚠️ 信号分歧较大，或缺乏足够确认
 - ⚠️ 风险与机会大致均衡
 - ⚠️ 更适合等待触发条件或回避不确定性
@@ -357,7 +375,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 
 1. **核心结论先行**：一句话说清该买该卖
 2. **分持仓建议**：空仓者和持仓者给不同建议
-3. **精确狙击点**：必须给出具体价格，不说模糊的话
+3. **参考点位有据**：有可靠行情和结构数据时给出具体价格；缺失时标记 N/A，不得编造
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出
 

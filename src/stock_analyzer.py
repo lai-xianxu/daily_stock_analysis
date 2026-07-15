@@ -746,7 +746,7 @@ class StockTrendAnalyzer:
             TrendStatus.WEAK_BEAR,
         ]:
             result.buy_signal = BuySignal.WAIT
-        elif score_signal == "watch":
+        elif score_signal in {"watch", "hold"}:
             result.buy_signal = BuySignal.WAIT
         elif score_signal == "sell" or result.trend_status in [TrendStatus.BEAR, TrendStatus.STRONG_BEAR]:
             result.buy_signal = BuySignal.STRONG_SELL

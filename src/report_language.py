@@ -243,6 +243,11 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "watch_label": "观望",
         "sell_label": "卖出",
         "summary_heading": "分析结果摘要",
+        "strategy_signal_heading": "综合策略判断",
+        "strategy_confidence_label": "置信度",
+        "strategy_reasons_label": "判断理由",
+        "strategy_upgrade_trigger_label": "升级条件",
+        "strategy_downgrade_trigger_label": "降级/失效条件",
         "info_heading": "重要信息速览",
         "sentiment_summary_label": "舆情情绪",
         "earnings_outlook_label": "业绩预期",
@@ -354,8 +359,8 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "news_sentiment_label": "新闻舆情",
         "fundamentals_label": "基本面",
         "market_conditions_label": "市场环境",
-        "strongest_bullish_signal_label": "最强看多信号",
-        "strongest_bearish_signal_label": "最强看空信号",
+        "strongest_bullish_signal_label": "主要支持因素",
+        "strongest_bearish_signal_label": "主要风险因素",
     },
     "en": {
         "dashboard_title": "Decision Dashboard",
@@ -367,6 +372,11 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "watch_label": "Watch",
         "sell_label": "Sell",
         "summary_heading": "Summary",
+        "strategy_signal_heading": "Strategy Assessment",
+        "strategy_confidence_label": "Confidence",
+        "strategy_reasons_label": "Evidence",
+        "strategy_upgrade_trigger_label": "Upgrade Trigger",
+        "strategy_downgrade_trigger_label": "Downgrade / Invalidation",
         "info_heading": "Key Updates",
         "sentiment_summary_label": "Sentiment",
         "earnings_outlook_label": "Earnings Outlook",
@@ -478,8 +488,8 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "news_sentiment_label": "News Sentiment",
         "fundamentals_label": "Fundamentals",
         "market_conditions_label": "Market Conditions",
-        "strongest_bullish_signal_label": "Strongest Bullish Signal",
-        "strongest_bearish_signal_label": "Strongest Bearish Signal",
+        "strongest_bullish_signal_label": "Primary Supporting Factor",
+        "strongest_bearish_signal_label": "Primary Risk Factor",
     },
     "ko": {
         "dashboard_title": "결정 대시보드",
@@ -491,6 +501,11 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "watch_label": "관망",
         "sell_label": "매도",
         "summary_heading": "분석 결과 요약",
+        "strategy_signal_heading": "종합 전략 판단",
+        "strategy_confidence_label": "신뢰도",
+        "strategy_reasons_label": "판단 근거",
+        "strategy_upgrade_trigger_label": "상향 조건",
+        "strategy_downgrade_trigger_label": "하향/무효화 조건",
         "info_heading": "핵심 업데이트",
         "sentiment_summary_label": "투자심리",
         "earnings_outlook_label": "실적 전망",
@@ -602,8 +617,8 @@ _REPORT_LABELS: Dict[str, Dict[str, str]] = {
         "news_sentiment_label": "뉴스 심리",
         "fundamentals_label": "펀더멘털",
         "market_conditions_label": "시장 환경",
-        "strongest_bullish_signal_label": "최강 상승 신호",
-        "strongest_bearish_signal_label": "최강 하락 신호",
+        "strongest_bullish_signal_label": "주요 지지 요인",
+        "strongest_bearish_signal_label": "주요 위험 요인",
     },
 }
 
@@ -978,6 +993,8 @@ def get_signal_level(advice: Any, score: Any, language: Optional[str]) -> tuple[
         return (_OPERATION_ADVICE_TRANSLATIONS["buy"][normalized_language], "🟢", "buy")
     if score_signal == "watch":
         return (_OPERATION_ADVICE_TRANSLATIONS["watch"][normalized_language], "⚪", "watch")
+    if score_signal == "hold":
+        return (_OPERATION_ADVICE_TRANSLATIONS["hold"][normalized_language], "🟡", "hold")
     if score_signal == "reduce":
         return (_OPERATION_ADVICE_TRANSLATIONS["reduce"][normalized_language], "🟠", "reduce")
     return (_OPERATION_ADVICE_TRANSLATIONS["sell"][normalized_language], "🔴", "sell")

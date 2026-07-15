@@ -745,6 +745,53 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(raw_result["action"], "watch")
         self.assertEqual(raw_result["action_label"], "观望")
 
+    def test_convert_agent_dashboard_prioritizes_strategy_signal(self):
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "sentiment_score": 88,
+                "trend_prediction": "看多",
+                "operation_advice": "买入",
+                "decision_type": "buy",
+                "action": "buy",
+                "confidence_level": "高",
+                "analysis_summary": "等待风险确认",
+                "dashboard": {
+                    "strategy_signal": {
+                        "signal_code": "reduce",
+                        "signal_label": "错误标签",
+                        "confidence": "中",
+                        "summary": "高位动能衰减",
+                        "reasons": [
+                            "[价格位置] 接近压力",
+                            "[量价资金] 上涨缩量",
+                            "[行业环境] 相对强弱转弱",
+                        ],
+                        "upgrade_trigger": "重新放量突破压力",
+                        "downgrade_trigger": "结构进一步破坏",
+                    }
+                },
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-strategy"
+        )
+
+        self.assertEqual(result.sentiment_score, 39)
+        self.assertEqual(result.operation_advice, "适合减仓")
+        self.assertEqual(result.action, "reduce")
+        self.assertEqual(result.decision_type, "sell")
+        self.assertEqual(result.confidence_level, "中")
+        self.assertEqual(result.dashboard["strategy_signal"]["signal_label"], "适合减仓")
+
     def test_final_action_refresh_preserves_explicit_action_when_advice_is_unchanged(self):
         """Pre-save refresh must not overwrite an explicit Agent action without a final advice rewrite."""
         pipeline = self._make_pipeline()
@@ -2897,11 +2944,11 @@ class TestSkillActivation(unittest.TestCase):
         self.assertEqual(count, len(_builtin_strategy_names()), "Should load all built-in strategies from YAML")
 
         default_ids = get_default_active_skill_ids(skill_manager.list_skills())
-        self.assertEqual(default_ids, ["bull_trend"])
+        self.assertEqual(default_ids, ["volume_contraction_timing"])
         skill_manager.activate(default_ids)
 
         active = skill_manager.list_active_skills()
-        self.assertEqual([skill.name for skill in active], ["bull_trend"])
+        self.assertEqual([skill.name for skill in active], ["volume_contraction_timing"])
 
     def test_sentiment_score_parsed_from_dashboard(self):
         """Verify _agent_result_to_analysis_result handles non-numeric sentiment_score."""

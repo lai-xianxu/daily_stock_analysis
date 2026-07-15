@@ -17,8 +17,29 @@
 {% set core = dashboard.get('core_conclusion') or {} %}
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set intel = dashboard.get('intelligence') or {} %}
+{% set strategy = e.strategy_signal or {} %}
 
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
+
+{% if strategy %}
+**🎯 {{ labels.strategy_signal_heading }}** | {{ labels.strategy_confidence_label }}: {{ strategy.get('confidence') or 'N/A' }}
+{% if strategy.get('summary') %}
+📌 {{ strategy.get('summary') }}
+{% endif %}
+{% if strategy.get('reasons') %}
+**{{ labels.strategy_reasons_label }}**:
+{% for reason in strategy.get('reasons')[:3] %}
+   • {{ reason }}
+{% endfor %}
+{% endif %}
+{% if strategy.get('upgrade_trigger') %}
+**{{ labels.strategy_upgrade_trigger_label }}**: {{ strategy.get('upgrade_trigger') }}
+{% endif %}
+{% if strategy.get('downgrade_trigger') %}
+**{{ labels.strategy_downgrade_trigger_label }}**: {{ strategy.get('downgrade_trigger') }}
+{% endif %}
+
+{% endif %}
 
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
 {% if one_sentence %}

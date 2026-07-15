@@ -119,10 +119,11 @@ class DesktopBackendPackagingAssetsTestCase(unittest.TestCase):
         strategies_dir = self.repo_root / "strategies"
         strategy_names = sorted(path.stem for path in strategies_dir.glob("*.yaml"))
 
-        self.assertEqual(len(strategy_names), 15)
+        self.assertEqual(len(strategy_names), 16)
         self.assertIn("bottom_volume", strategy_names)
         self.assertIn("chan_theory", strategy_names)
         self.assertIn("ma_golden_cross", strategy_names)
+        self.assertIn("volume_contraction_timing", strategy_names)
         self.assertIn("wave_theory", strategy_names)
 
     def test_backend_pyinstaller_scripts_include_strategies_data_directory(self):

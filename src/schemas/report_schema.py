@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.schemas.strategy_signal import StrategySignal
+
 
 class PositionAdvice(BaseModel):
     """Position advice for no-position vs has-position."""
@@ -225,6 +227,7 @@ class Dashboard(BaseModel):
     battle_plan: Optional[BattlePlan] = None
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
+    strategy_signal: Optional[StrategySignal] = None
 
 
 class AnalysisReportSchema(BaseModel):

@@ -334,7 +334,7 @@ def test_build_payload_uses_stability_calibration_raw_and_adjusted_scores() -> N
     assert payload["score"] == 59
     assert payload["metadata"]["raw_score"] == 72
     assert payload["metadata"]["adjusted_score"] == 59
-    assert payload["metadata"]["score_scale"]["score_band"] == "40-59"
+    assert payload["metadata"]["score_scale"]["score_band"] == "50-59"
     assert payload["metadata"]["raw_action"] == "watch"
     assert payload["metadata"]["final_action"] == "watch"
     assert payload["metadata"]["guardrail_reason"] == "资金流较弱，按风险规则降级"

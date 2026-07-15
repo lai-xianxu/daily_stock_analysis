@@ -97,6 +97,12 @@ from src.schemas.decision_scale import (
     CANONICAL_DECISION_SCALE_PROMPT_ZH,
     score_band_metadata,
 )
+from src.schemas.strategy_signal import (
+    MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH,
+    align_score_to_strategy_signal,
+    normalize_strategy_signal_payload,
+    strategy_signal_definition,
+)
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
 from src.services.daily_market_context import format_daily_market_context_prompt_section
@@ -1844,6 +1850,50 @@ def populate_decision_action_fields(
     """Populate optional decision action fields without changing legacy advice."""
 
     action_source = explicit_action
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
+    strategy_payload = dashboard.get("strategy_signal") if dashboard else None
+    normalized_strategy = normalize_strategy_signal_payload(
+        strategy_payload,
+        getattr(result, "report_language", "zh"),
+    )
+    if normalized_strategy is not None and dashboard is not None:
+        definition = strategy_signal_definition(normalized_strategy["signal_code"])
+        if definition is not None:
+            dashboard["strategy_signal"] = normalized_strategy
+            raw_score = getattr(result, "sentiment_score", 50)
+            adjusted_score = align_score_to_strategy_signal(definition.code, raw_score)
+            if isinstance(adjusted_score, int):
+                try:
+                    numeric_raw_score = int(float(raw_score))
+                except (TypeError, ValueError):
+                    numeric_raw_score = adjusted_score
+                result.sentiment_score = adjusted_score
+                if adjusted_score != numeric_raw_score:
+                    _record_decision_score_calibration(
+                        result,
+                        raw_score=numeric_raw_score,
+                        adjusted_score=adjusted_score,
+                        final_action=definition.action,
+                        guardrail_reason=(
+                            f"strategy_signal={definition.code} requires score "
+                            f"{definition.min_score}-{definition.max_score}"
+                        ),
+                    )
+                    calibration = dashboard.get("decision_score_calibration")
+                    if isinstance(calibration, dict):
+                        calibration["calibration_source"] = "strategy_signal"
+                        calibration["strategy_signal_code"] = definition.code
+
+            result.operation_advice = normalized_strategy["signal_label"]
+            result.decision_type = definition.decision_type
+            confidence = str(normalized_strategy.get("confidence") or "").strip()
+            if confidence:
+                result.confidence_level = localize_confidence_level(
+                    confidence,
+                    getattr(result, "report_language", "zh"),
+                )
+            action_source = definition.action
+
     if action_source is None and use_existing_action:
         action_source = getattr(result, "action", None)
 
@@ -2076,7 +2126,7 @@ class GeminiAnalyzer:
 {default_skill_policy_section}
 {skills_section}
 
-""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + """
+""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH + """
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -2150,8 +2200,8 @@ class GeminiAnalyzer:
                 "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
             },
             "position_strategy": {
-                "suggested_position": "建议仓位：X成",
-                "entry_plan": "分批建仓策略描述",
+                "suggested_position": "通用风险暴露提示，不输出个性化仓位比例",
+                "entry_plan": "分批验证与触发条件，不假设用户实际持仓",
                 "risk_control": "风控策略描述"
             },
             "action_checklist": [
@@ -2221,7 +2271,11 @@ class GeminiAnalyzer:
 - ✅ 允许存在可控风险或次优入场点
 - ✅ 需要在报告中明确补充观察条件
 
-### 观望（40-59分）：
+### 适合持有（50-59分）：
+- ✅ 长期逻辑与主要结构保持正常
+- ✅ 暂无足够的进攻或退出确认
+
+### 继续观察（40-49分）：
 - ⚠️ 信号分歧较大，或缺乏足够确认
 - ⚠️ 风险与机会大致均衡
 - ⚠️ 更适合等待触发条件或回避不确定性
@@ -2240,7 +2294,7 @@ class GeminiAnalyzer:
 
 1. **核心结论先行**：一句话说清该买该卖
 2. **分持仓建议**：空仓者和持仓者给不同建议
-3. **精确狙击点**：必须给出具体价格，不说模糊的话
+3. **参考点位有据**：有可靠行情和结构数据时给出具体价格；缺失时标记 N/A，不得编造
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出
 

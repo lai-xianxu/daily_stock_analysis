@@ -19,6 +19,17 @@ from src.report_language import (
 
 
 class ReportLanguageTestCase(unittest.TestCase):
+    def test_strategy_signal_labels_and_attribution_names(self) -> None:
+        labels = get_report_labels("zh")
+
+        self.assertEqual(labels["strategy_signal_heading"], "综合策略判断")
+        self.assertEqual(labels["strategy_confidence_label"], "置信度")
+        self.assertEqual(labels["strategy_reasons_label"], "判断理由")
+        self.assertEqual(labels["strategy_upgrade_trigger_label"], "升级条件")
+        self.assertEqual(labels["strategy_downgrade_trigger_label"], "降级/失效条件")
+        self.assertEqual(labels["strongest_bullish_signal_label"], "主要支持因素")
+        self.assertEqual(labels["strongest_bearish_signal_label"], "主要风险因素")
+
     def test_get_signal_level_handles_compound_sell_advice(self) -> None:
         signal_text, emoji, signal_tag = get_signal_level("卖出/观望", 60, "zh")
 
@@ -37,7 +48,7 @@ class ReportLanguageTestCase(unittest.TestCase):
         self.assertEqual(get_signal_level("", 28, "zh"), ("减仓", "🟠", "reduce"))
         self.assertEqual(get_signal_level("", 38, "zh"), ("减仓", "🟠", "reduce"))
         self.assertEqual(get_signal_level("", 42, "zh"), ("观望", "⚪", "watch"))
-        self.assertEqual(get_signal_level("", 55, "zh"), ("观望", "⚪", "watch"))
+        self.assertEqual(get_signal_level("", 55, "zh"), ("持有", "🟡", "hold"))
         self.assertEqual(get_signal_level("", 60, "zh"), ("买入", "🟢", "buy"))
         self.assertEqual(get_signal_level("", 66, "zh"), ("买入", "🟢", "buy"))
         self.assertEqual(get_signal_level("", 72, "zh"), ("买入", "🟢", "buy"))

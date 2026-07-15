@@ -69,6 +69,50 @@ def _with_decision_signal_summary(result: AnalysisResult) -> AnalysisResult:
     return result
 
 
+def _make_strategy_result() -> AnalysisResult:
+    result = _make_result(
+        sentiment_score=68,
+        operation_advice="减仓",
+        decision_type="sell",
+        dashboard={
+            "strategy_signal": {
+                "signal_code": "low_buy",
+                "signal_label": "错误标签",
+                "confidence": "中",
+                "summary": "支撑附近抛压减弱，等待转强确认",
+                "reasons": [
+                    "[基本面] 盈利与现金流未见明显恶化",
+                    "[价格位置] 接近可验证支撑区域",
+                    "[量价资金] 下跌量能收敛且资金流趋稳",
+                ],
+                "upgrade_trigger": "形成更高低点并收复短期均线",
+                "downgrade_trigger": "有效跌破支撑且基本面风险上升",
+            },
+            "core_conclusion": {"one_sentence": "旧核心结论仍保留"},
+            "intelligence": {
+                "latest_news": "近期公告未见重大硬风险",
+                "risk_alerts": ["行业需求仍需跟踪"],
+            },
+            "data_perspective": {
+                "trend_status": {"ma_alignment": "震荡", "is_bullish": False, "trend_score": 48},
+                "price_position": {"current_price": 100, "support_level": 98, "resistance_level": 110},
+                "volume_analysis": {
+                    "volume_ratio": 0.72,
+                    "volume_status": "缩量",
+                    "turnover_rate": 1.2,
+                    "volume_meaning": "下跌抛压有所收敛",
+                },
+            },
+            "battle_plan": {
+                "sniper_points": {"ideal_buy": "98-100", "stop_loss": "96", "take_profit": "110"},
+                "action_checklist": ["✅ 长期逻辑未明显恶化"],
+            },
+        },
+    )
+    result.market_snapshot = {"close": "100", "volume_ratio": "0.72", "source": "test"}
+    return result
+
+
 class TestReportRenderer(unittest.TestCase):
     """Report renderer tests."""
 
@@ -134,6 +178,35 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("核心结论", out)
         self.assertIn("作战计划", out)
         self.assertNotIn("盘中决策护栏", out)
+
+    def test_all_reports_prioritize_strategy_signal_and_evidence(self) -> None:
+        result = _make_strategy_result()
+
+        for platform in ("markdown", "wechat", "brief"):
+            with self.subTest(platform=platform):
+                out = render(platform, [result], summary_only=False)
+                self.assertIsNotNone(out)
+                self.assertIn("综合策略判断", out)
+                self.assertIn("适合低吸", out)
+                self.assertIn("置信度", out)
+                self.assertIn("盈利与现金流未见明显恶化", out)
+                self.assertIn("形成更高低点并收复短期均线", out)
+                self.assertIn("有效跌破支撑且基本面风险上升", out)
+
+    def test_strategy_markdown_precedes_and_preserves_legacy_sections(self) -> None:
+        out = render("markdown", [_make_strategy_result()], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertLess(out.index("综合策略判断"), out.index("重要信息速览"))
+        for legacy_text in ("核心结论", "当日行情", "数据透视", "量比", "作战计划"):
+            self.assertIn(legacy_text, out)
+
+    def test_report_without_strategy_signal_keeps_legacy_layout(self) -> None:
+        out = render("markdown", [_make_result()], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertNotIn("综合策略判断", out)
+        self.assertIn("核心结论", out)
 
     def test_render_markdown_omits_decision_signal_excerpt(self) -> None:
         """Markdown reports omit the duplicated DecisionSignal excerpt."""

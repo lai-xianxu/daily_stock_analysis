@@ -185,6 +185,23 @@ def render(
     buy_count = sum(1 for bucket in display_buckets if bucket == "buy")
     sell_count = sum(1 for bucket in display_buckets if bucket == "sell")
     hold_count = len(display_buckets) - buy_count - sell_count
+    strategy_summary: List[Dict[str, Any]] = []
+    if sorted_enriched and all(entry["strategy_signal"] for entry in sorted_enriched):
+        strategy_counts: Dict[str, int] = {}
+        for entry in sorted_enriched:
+            code = entry["strategy_signal"]["signal_code"]
+            strategy_counts[code] = strategy_counts.get(code, 0) + 1
+        for code in ("accumulate", "low_buy", "hold", "watch", "reduce", "exit"):
+            count = strategy_counts.get(code, 0)
+            definition = strategy_signal_definition(code)
+            if count and definition is not None:
+                strategy_summary.append(
+                    {
+                        "code": code,
+                        "label": definition.label_for_language(report_language),
+                        "count": count,
+                    }
+                )
     show_llm_model = bool(getattr(get_config(), "report_show_llm_model", True))
     models_used: List[str] = []
     if show_llm_model:
@@ -227,6 +244,7 @@ def render(
         "buy_count": buy_count,
         "sell_count": sell_count,
         "hold_count": hold_count,
+        "strategy_summary": strategy_summary,
         "labels": labels,
         "report_language": report_language,
         "models_used": models_used,

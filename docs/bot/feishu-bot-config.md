@@ -54,6 +54,10 @@ FEISHU_STREAM_ENABLED=true
 - 如果你做的是应用机器人 / Stream Bot，可直接看文末保留的原流程截图参考
 - App Bot 发送路径复用 `requirements.txt` 中已有的 `lark-oapi>=1.0.0`，标准安装使用 `pip install -r requirements.txt`；参考 [Feishu message create OpenAPI](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[lark-oapi PyPI](https://pypi.org/project/lark-oapi/) 和 [SDK repo](https://github.com/larksuite/oapi-sdk-python)
 
+### 默认文字报告
+
+聚合日报默认发送精简策略版文字，按股票展示六类策略信号、主要理由、关键量价、风险及升级/失效条件。完整 Markdown 仍保存在本地报告或 GitHub Actions artifact；需要在飞书里直接接收完整内容时，使用下面的文件发送模式。
+
 ### 文件发送模式（FEISHU_SEND_AS_FILE）
 
 开启后，飞书 App Bot 将报告以 `.md` 文件形式发送，而非文字/卡片消息：

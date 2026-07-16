@@ -343,6 +343,7 @@ class TestAnalyzerGenerateText:
             "这不是 JSON，而是 fallback 模型返回的纯文本分析",
             "600519",
             "贵州茅台",
+            synthesize_strategy_signal=False,
         )
         mock_persist.assert_called_once_with(
             {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
@@ -2381,7 +2382,12 @@ class TestAnalyzerGenerateText:
 
         # _parse_response called twice (initial + retry)
         assert mock_parse.call_count == 2
-        mock_parse.assert_called_with("这不是 JSON，而是纯文本分析结果", "600519", "贵州茅台")
+        mock_parse.assert_called_with(
+            "这不是 JSON，而是纯文本分析结果",
+            "600519",
+            "贵州茅台",
+            synthesize_strategy_signal=True,
+        )
 
         # Placeholder fill was applied after retry exhaustion
         mock_fill.assert_called_once()

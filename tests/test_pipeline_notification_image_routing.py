@@ -191,6 +191,50 @@ class TestPipelineWechatOnlyImageRouting(unittest.TestCase):
         )
 
 
+class _FakeFeishuNotifier:
+    def __init__(self):
+        self._markdown_to_image_channels = set()
+        self._markdown_to_image_max_chars = 15000
+        self._feishu_send_as_file = False
+        self.generate_dashboard_report = MagicMock(return_value="full-dashboard-report")
+        self.generate_wechat_dashboard = MagicMock(return_value="strategy-focused-report")
+        self.generate_brief_report = MagicMock(return_value="brief-report")
+        self.save_report_to_file = MagicMock(return_value="/tmp/report.md")
+        self.is_available = MagicMock(return_value=True)
+        self.get_available_channels = MagicMock(return_value=[NotificationChannel.FEISHU])
+        self.get_channels_for_route = MagicMock(return_value=[NotificationChannel.FEISHU])
+        self.send_to_context = MagicMock(return_value=False)
+        self.send_to_feishu = MagicMock(return_value=True)
+
+
+class TestPipelineFeishuStrategyReportRouting(unittest.TestCase):
+    def test_feishu_text_uses_strategy_focused_report_instead_of_full_dashboard(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeFeishuNotifier()
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        pipeline._send_notifications(results, ReportType.SIMPLE)
+
+        pipeline.notifier.generate_wechat_dashboard.assert_called_once_with(results)
+        pipeline.notifier.send_to_feishu.assert_called_once_with("strategy-focused-report")
+        self.assertNotEqual(
+            pipeline.notifier.send_to_feishu.call_args.args[0],
+            "full-dashboard-report",
+        )
+
+    def test_feishu_brief_mode_keeps_brief_report(self):
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.notifier = _FakeFeishuNotifier()
+        pipeline.config = SimpleNamespace(stock_email_groups=[])
+        results = [SimpleNamespace(code="000001")]
+
+        pipeline._send_notifications(results, ReportType.BRIEF)
+
+        pipeline.notifier.generate_brief_report.assert_called_once_with(results)
+        pipeline.notifier.send_to_feishu.assert_called_once_with("brief-report")
+
+
 class _FakeRoutedNotifier:
     def __init__(self, routed_channels, image_channels=None, noise_should_send=True):
         self._markdown_to_image_channels = set(image_channels or [])

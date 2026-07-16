@@ -147,23 +147,33 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("支撑/压力位", prompt)
         self.assertIn("洗盘观察", prompt)
 
-    def test_analysis_prompt_score_scale_splits_reduce_and_sell_bands(self) -> None:
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
-                with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
-                    analyzer = GeminiAnalyzer(
-                        skill_instructions="",
-                        default_skill_policy="",
-                        use_legacy_default_prompt=legacy,
-                    )
+    def test_analysis_prompt_score_scale_matches_selected_prompt_mode(self) -> None:
+        with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
+            current_analyzer = GeminiAnalyzer(
+                skill_instructions="",
+                default_skill_policy="",
+                use_legacy_default_prompt=False,
+            )
+            legacy_analyzer = GeminiAnalyzer(
+                skill_instructions="",
+                default_skill_policy="",
+                use_legacy_default_prompt=True,
+            )
 
-                prompt = analyzer._get_analysis_system_prompt("zh", stock_code="600519")
+        current_prompt = current_analyzer._get_analysis_system_prompt("zh", stock_code="600519")
+        legacy_prompt = legacy_analyzer._get_analysis_system_prompt("zh", stock_code="600519")
 
-                self.assertIn("### 减仓（20-39分）", prompt)
-                self.assertIn("### 卖出（0-19分）", prompt)
-                self.assertIn("20-39：减仓，`action=reduce`，`decision_type=sell`。", prompt)
-                self.assertIn("0-19：卖出，`action=sell`，`decision_type=sell`。", prompt)
-                self.assertNotIn("### 卖出/减仓（0-39分）", prompt)
+        self.assertIn("### 适合减仓（20-39分）", current_prompt)
+        self.assertIn("### 适合清仓（0-19分）", current_prompt)
+        self.assertIn("`reduce`（适合减仓）：20-39", current_prompt)
+        self.assertIn("`exit`（适合清仓）：0-19", current_prompt)
+        self.assertNotIn("Canonical 评分与动作口径", current_prompt)
+
+        self.assertIn("### 减仓（20-39分）", legacy_prompt)
+        self.assertIn("### 卖出（0-19分）", legacy_prompt)
+        self.assertIn("20-39：减仓，`action=reduce`，`decision_type=sell`。", legacy_prompt)
+        self.assertIn("0-19：卖出，`action=sell`，`decision_type=sell`。", legacy_prompt)
+        self.assertNotIn("### 卖出/减仓（0-39分）", legacy_prompt)
 
     def test_prompt_contains_time_constraints(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):

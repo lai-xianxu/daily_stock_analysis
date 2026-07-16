@@ -9,6 +9,7 @@ Tests for Jinja2 report rendering and fallback behavior.
 
 import sys
 import unittest
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 try:
@@ -88,7 +89,13 @@ def _make_strategy_result() -> AnalysisResult:
                 "upgrade_trigger": "形成更高低点并收复短期均线",
                 "downgrade_trigger": "有效跌破支撑且基本面风险上升",
             },
-            "core_conclusion": {"one_sentence": "旧核心结论仍保留"},
+            "core_conclusion": {
+                "one_sentence": "旧核心结论仍保留",
+                "position_advice": {
+                    "no_position": "空仓者等待回踩",
+                    "has_position": "持仓者控制三成仓位",
+                },
+            },
             "intelligence": {
                 "latest_news": "近期公告未见重大硬风险",
                 "risk_alerts": ["行业需求仍需跟踪"],
@@ -105,6 +112,11 @@ def _make_strategy_result() -> AnalysisResult:
             },
             "battle_plan": {
                 "sniper_points": {"ideal_buy": "98-100", "stop_loss": "96", "take_profit": "110"},
+                "position_strategy": {
+                    "suggested_position": "三成仓位",
+                    "entry_plan": "首次买入两成",
+                    "risk_control": "控制仓位",
+                },
                 "action_checklist": ["✅ 长期逻辑未明显恶化"],
             },
         },
@@ -200,6 +212,40 @@ class TestReportRenderer(unittest.TestCase):
         self.assertLess(out.index("综合策略判断"), out.index("重要信息速览"))
         for legacy_text in ("核心结论", "当日行情", "数据透视", "量比", "作战计划"):
             self.assertIn(legacy_text, out)
+        for personalized_text in ("空仓者等待回踩", "持仓者控制三成仓位", "首次买入两成"):
+            self.assertNotIn(personalized_text, out)
+
+    def test_strategy_wechat_is_compact_and_uses_six_state_summary(self) -> None:
+        out = render("wechat", [_make_strategy_result()], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertIn("适合低吸:1", out)
+        self.assertIn("盈利与现金流未见明显恶化", out)
+        self.assertIn("行业需求仍需跟踪", out)
+        self.assertNotIn("🟢买入:1", out)
+        for personalized_text in (
+            "空仓者等待回踩",
+            "持仓者控制三成仓位",
+            "三成仓位",
+            "首次买入两成",
+        ):
+            self.assertNotIn(personalized_text, out)
+
+    def test_strategy_wechat_stays_compact_for_thirteen_stocks(self) -> None:
+        results = []
+        for index in range(13):
+            result = deepcopy(_make_strategy_result())
+            result.code = f"{300000 + index:06d}"
+            result.name = f"示例{index + 1}"
+            results.append(result)
+
+        out = render("wechat", results, summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertLess(len(out), 10000)
+        self.assertEqual(out.count("综合策略判断"), 13)
+        for personalized_text in ("空仓者", "持仓者", "三成仓位", "首次买入两成"):
+            self.assertNotIn(personalized_text, out)
 
     def test_report_without_strategy_signal_keeps_legacy_layout(self) -> None:
         out = render("markdown", [_make_result()], summary_only=False)

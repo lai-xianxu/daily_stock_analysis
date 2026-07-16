@@ -1422,6 +1422,9 @@ class StockAnalysisPipeline:
                 report_type,
                 query_id,
                 trend_result=trend_result,
+                synthesize_strategy_signal=not bool(
+                    getattr(executor, "use_legacy_default_prompt", False)
+                ),
             )
             record_llm_run(
                 success=bool(result and getattr(result, "success", True)),
@@ -1788,6 +1791,8 @@ class StockAnalysisPipeline:
         report_type: ReportType,
         query_id: str,
         trend_result: Optional[TrendAnalysisResult] = None,
+        *,
+        synthesize_strategy_signal: bool = False,
     ) -> AnalysisResult:
         """
         将 AgentResult 转换为 AnalysisResult。
@@ -1964,7 +1969,11 @@ class StockAnalysisPipeline:
         explicit_action = dash.get("action") if isinstance(dash, dict) else None
         if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
             explicit_action = result.dashboard.get("action")
-        return populate_decision_action_fields(result, explicit_action=explicit_action)
+        return populate_decision_action_fields(
+            result,
+            explicit_action=explicit_action,
+            synthesize_strategy_signal=synthesize_strategy_signal,
+        )
 
     @staticmethod
     def _refresh_decision_action_for_final_result(
@@ -3448,7 +3457,13 @@ class StockAnalysisPipeline:
                                     report, filename=f"dashboard_{date_str}.md"
                                 )
                                 return self.notifier.send_feishu_file(filepath)
-                            return self.notifier.send_to_feishu(report)
+                            feishu_content = (
+                                report
+                                if report_type == ReportType.BRIEF
+                                else self.notifier.generate_wechat_dashboard(results)
+                            )
+                            logger.info(f"飞书策略报告长度: {len(feishu_content)} 字符")
+                            return self.notifier.send_to_feishu(feishu_content)
 
                         channel_success, channel_error = _send_channel_safely(
                             channel.value,

@@ -167,6 +167,57 @@ def test_downgrades_buy_when_capital_flow_is_unavailable() -> None:
     assert "未使用资金流校准" in sell_result.dashboard["decision_stability"]["reason"]
 
 
+def test_strategy_signal_downgrade_updates_all_public_action_fields() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=66,
+        current_price=32.0,
+    )
+    result.action = "buy"
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "low_buy",
+        "signal_label": "适合低吸",
+        "confidence": "中",
+        "summary": "支撑附近出现低吸条件",
+        "reasons": [
+            "[基本面] 长期逻辑未恶化",
+            "[价格结构] 接近支撑",
+            "[量价资金] 抛压减弱",
+        ],
+        "upgrade_trigger": "资金回流并形成转强结构",
+        "downgrade_trigger": "有效跌破支撑",
+    }
+    result.dashboard["core_conclusion"]["position_advice"] = {
+        "no_position": "空仓者建议",
+        "has_position": "持仓者建议",
+    }
+    result.dashboard["battle_plan"] = {
+        "position_strategy": {"suggested_position": "三成仓位"}
+    }
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _unsupported_fund_flow(),
+    )
+
+    assert result.sentiment_score == 49
+    assert result.operation_advice == "继续观察"
+    assert result.action == "watch"
+    assert result.decision_type == "hold"
+    assert result.confidence_level == "低"
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "watch"
+    assert strategy["signal_label"] == "继续观察"
+    assert "资金流" in strategy["summary"]
+    assert result.dashboard["operation_advice"] == "继续观察"
+    assert result.dashboard["decision_type"] == "hold"
+    assert result.dashboard["action"] == "watch"
+    assert "position_advice" not in result.dashboard["core_conclusion"]
+    assert "position_strategy" not in result.dashboard["battle_plan"]
+
+
 def test_downgrades_buy_when_capital_flow_values_are_na() -> None:
     result = _result(
         decision_type="buy",

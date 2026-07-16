@@ -3,10 +3,12 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
 from src.agent.executor import AGENT_SYSTEM_PROMPT
+from src.agent.factory import resolve_skill_prompt_state
 from src.analyzer import GeminiAnalyzer
 from src.schemas.report_schema import AnalysisReportSchema
 
@@ -97,6 +99,17 @@ def test_default_strategy_uses_multidimensional_gates_without_position_assumptio
         assert personalized_position_text not in instructions
 
 
+def test_implicit_default_run_uses_multidimensional_skill_aware_prompt() -> None:
+    state = resolve_skill_prompt_state(
+        config=SimpleNamespace(agent_skills=[], agent_skill_dir=None),
+    )
+
+    assert state.skills_to_activate == ["volume_contraction_timing"]
+    assert state.use_legacy_default_prompt is False
+    assert state.default_skill_policy == ""
+    assert "基本面约束下的多维择时" in state.skill_instructions
+
+
 def test_normal_and_agent_prompts_require_the_same_six_state_contract() -> None:
     for prompt in (GeminiAnalyzer.SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT):
         for code in ("watch", "low_buy", "accumulate", "hold", "reduce", "exit"):
@@ -113,6 +126,14 @@ def test_normal_and_agent_prompts_require_the_same_six_state_contract() -> None:
             "参考点位无可靠数据时必须标记 N/A",
         ):
             assert phrase in prompt
+        assert '"operation_advice": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓"' in prompt
+        assert '"position_advice"' not in prompt
+        assert "空仓者建议" not in prompt
+        assert "分持仓建议" not in prompt
+        assert '"operation_advice": "买入/加仓/持有/减仓/卖出/观望"' not in prompt
+        assert "Canonical 评分与动作口径" not in prompt
+        assert "80-100：强烈买入，`action=buy`" not in prompt
+        assert "0-19：卖出，`action=sell`" not in prompt
 
 
 def test_agent_prompt_requests_every_multidimensional_data_tool() -> None:
@@ -203,7 +224,12 @@ def test_parser_uses_strategy_signal_as_primary_compatible_action() -> None:
         ensure_ascii=False,
     )
 
-    result = analyzer._parse_response(response, "600519", "贵州茅台")
+    result = analyzer._parse_response(
+        response,
+        "600519",
+        "贵州茅台",
+        synthesize_strategy_signal=True,
+    )
 
     assert result.sentiment_score == 60
     assert result.operation_advice == "适合低吸"
@@ -218,7 +244,7 @@ def test_parser_uses_strategy_signal_as_primary_compatible_action() -> None:
     assert calibration["final_action"] == "buy"
 
 
-def test_parser_without_valid_strategy_signal_keeps_legacy_fields() -> None:
+def test_parser_without_valid_strategy_signal_synthesizes_six_state_contract() -> None:
     analyzer = GeminiAnalyzer()
     response = json.dumps(
         {
@@ -228,15 +254,37 @@ def test_parser_without_valid_strategy_signal_keeps_legacy_fields() -> None:
             "operation_advice": "减仓",
             "decision_type": "sell",
             "action": "reduce",
-            "analysis_summary": "测试",
-            "dashboard": {"strategy_signal": {"signal_code": "unknown"}},
+            "confidence_level": "中",
+            "analysis_summary": "长期逻辑尚未反转，但价格结构和量价表现偏弱。",
+            "fundamental_analysis": "盈利仍有韧性，现金流需要继续验证。",
+            "technical_analysis": "价格跌破短期均线并接近前低。",
+            "volume_analysis": "下跌期间量能放大，资金承接不足。",
+            "sector_position": "行业相对强弱处于后排。",
+            "risk_warning": "若前低失守，结构风险将进一步扩大。",
+            "dashboard": {
+                "core_conclusion": {"one_sentence": "先降低风险暴露"},
+                "strategy_signal": {"signal_code": "unknown"},
+            },
         },
         ensure_ascii=False,
     )
 
-    result = analyzer._parse_response(response, "600519", "贵州茅台")
+    result = analyzer._parse_response(
+        response,
+        "600519",
+        "贵州茅台",
+        synthesize_strategy_signal=True,
+    )
 
     assert result.sentiment_score == 35
-    assert result.operation_advice == "减仓"
+    assert result.operation_advice == "适合减仓"
     assert result.action == "reduce"
     assert result.decision_type == "sell"
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "reduce"
+    assert strategy["signal_label"] == "适合减仓"
+    assert 3 <= len(strategy["reasons"]) <= 5
+    assert any(reason.startswith("[基本面]") for reason in strategy["reasons"])
+    assert any(reason.startswith("[价格结构]") for reason in strategy["reasons"])
+    assert any(reason.startswith("[量价资金]") for reason in strategy["reasons"])
+    assert result.dashboard["decision_score_calibration"]["strategy_signal_source"] == "score_fallback"

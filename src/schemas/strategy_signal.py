@@ -116,6 +116,20 @@ def strategy_signal_definition(value: Any) -> Optional[StrategySignalDefinition]
     return _DEFINITIONS_BY_CODE.get(_normalize_code(value))  # type: ignore[arg-type]
 
 
+def strategy_signal_definition_for_score(score: Any) -> StrategySignalDefinition:
+    """Return the canonical six-state definition for a score."""
+
+    try:
+        normalized_score = int(float(score))
+    except (TypeError, ValueError):
+        normalized_score = 50
+    normalized_score = min(max(normalized_score, 0), 100)
+    for definition in STRATEGY_SIGNAL_DEFINITIONS:
+        if definition.min_score <= normalized_score <= definition.max_score:
+            return definition
+    return _DEFINITIONS_BY_CODE["hold"]
+
+
 def align_score_to_strategy_signal(code: Any, score: Any) -> Any:
     """Clamp a numeric score to the score band required by a strategy signal."""
 

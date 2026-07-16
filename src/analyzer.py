@@ -102,6 +102,7 @@ from src.schemas.strategy_signal import (
     align_score_to_strategy_signal,
     normalize_strategy_signal_payload,
     strategy_signal_definition,
+    strategy_signal_definition_for_score,
 )
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
@@ -1488,6 +1489,12 @@ def _downgrade_buy_without_capital_flow(
         has_position=has_position,
         capital_flow_status=status_text,
     )
+    _synchronize_strategy_signal_after_stability(
+        result,
+        signal_code="watch",
+        reason=reason,
+        confidence=confidence,
+    )
     _sync_stability_dashboard_fields(result)
     logger.info("[decision_stability] Downgraded buy because capital flow is unavailable: %s", flow_status)
 
@@ -1608,6 +1615,11 @@ def _set_structural_hold_wording(
         no_position=no_position,
         has_position=has_position,
     )
+    _synchronize_strategy_signal_after_stability(
+        result,
+        signal_code="watch" if advice_key in {"range", "shakeout"} else "hold",
+        reason=reason,
+    )
     logger.info("[decision_stability] Applied structural hold calibration: %s", reason_key)
 
 
@@ -1684,7 +1696,7 @@ class AnalysisResult:
     # ========== 核心指标 ==========
     sentiment_score: int  # 综合评分 0-100 (>70强烈看多, >60看多, 40-60震荡, <40看空)
     trend_prediction: str  # 趋势预测：强烈看多/看多/震荡/看空/强烈看空
-    operation_advice: str  # 操作建议：买入/加仓/持有/减仓/卖出/观望
+    operation_advice: str  # 操作建议：六类策略信号标签；旧报告仍兼容传统买卖标签
     decision_type: str = "hold"  # 决策类型：buy/hold/sell（用于统计）
     confidence_level: str = "中"  # 置信度：高/中/低
     report_language: str = "zh"  # 报告输出语言：zh/en
@@ -1839,6 +1851,279 @@ class AnalysisResult:
         return star_map.get(str(self.confidence_level or "").strip().lower(), "⭐⭐")
 
 
+def _compact_strategy_text(value: Any, max_chars: int = 160) -> str:
+    """Return concise evidence text without inventing missing values."""
+
+    if isinstance(value, (list, tuple)):
+        value = next((item for item in value if _is_meaningful_text(item)), "")
+    if isinstance(value, dict) or not _is_meaningful_text(value):
+        return ""
+    text = str(value).strip()
+    return text if len(text) <= max_chars else f"{text[:max_chars - 1]}…"
+
+
+def _first_strategy_text(*values: Any) -> str:
+    for value in values:
+        text = _compact_strategy_text(value)
+        if text:
+            return text
+    return ""
+
+
+def _fallback_strategy_reasons(
+    result: AnalysisResult,
+    dashboard: Dict[str, Any],
+    language: str,
+) -> List[str]:
+    intelligence = dashboard.get("intelligence")
+    intelligence = intelligence if isinstance(intelligence, dict) else {}
+    data_perspective = dashboard.get("data_perspective")
+    data_perspective = data_perspective if isinstance(data_perspective, dict) else {}
+    volume = data_perspective.get("volume_analysis")
+    volume = volume if isinstance(volume, dict) else {}
+
+    language_labels = {
+        "zh": {
+            "fundamental": "[基本面]",
+            "price": "[价格结构]",
+            "volume": "[量价资金]",
+            "market": "[市场行业]",
+            "risk": "[风险事件]",
+            "missing_fundamental": "基本面证据缺失，已降低结论确定性",
+            "missing_price": "价格结构证据缺失，暂不使用具体点位",
+            "missing_volume": "量价或资金证据缺失，不能由成交量单独下结论",
+        },
+        "en": {
+            "fundamental": "[Fundamentals]",
+            "price": "[Price structure]",
+            "volume": "[Volume and flow]",
+            "market": "[Market and sector]",
+            "risk": "[Event risk]",
+            "missing_fundamental": "Fundamental evidence is unavailable, reducing certainty",
+            "missing_price": "Price-structure evidence is unavailable; no price level is inferred",
+            "missing_volume": "Volume or capital-flow evidence is unavailable; volume alone is insufficient",
+        },
+        "ko": {
+            "fundamental": "[펀더멘털]",
+            "price": "[가격 구조]",
+            "volume": "[거래량·자금]",
+            "market": "[시장·업종]",
+            "risk": "[이벤트 리스크]",
+            "missing_fundamental": "펀더멘털 근거가 없어 결론의 확신도를 낮췄습니다",
+            "missing_price": "가격 구조 근거가 없어 구체 가격대를 추정하지 않습니다",
+            "missing_volume": "거래량 또는 자금 근거가 없어 거래량만으로 결론 내릴 수 없습니다",
+        },
+    }
+    labels = language_labels.get(language, language_labels["en"])
+    evidence = [
+        (
+            "fundamental",
+            _first_strategy_text(
+                getattr(result, "fundamental_analysis", ""),
+                intelligence.get("earnings_outlook"),
+                getattr(result, "company_highlights", ""),
+            ),
+        ),
+        (
+            "price",
+            _first_strategy_text(
+                getattr(result, "technical_analysis", ""),
+                getattr(result, "ma_analysis", ""),
+                getattr(result, "pattern_analysis", ""),
+            ),
+        ),
+        (
+            "volume",
+            _first_strategy_text(
+                getattr(result, "volume_analysis", ""),
+                volume.get("volume_meaning"),
+            ),
+        ),
+        (
+            "market",
+            _first_strategy_text(
+                getattr(result, "sector_position", ""),
+                getattr(result, "market_sentiment", ""),
+            ),
+        ),
+        (
+            "risk",
+            _first_strategy_text(
+                getattr(result, "risk_warning", ""),
+                intelligence.get("risk_alerts"),
+            ),
+        ),
+    ]
+
+    reasons: List[str] = []
+    for dimension, text in evidence:
+        if text:
+            reasons.append(f"{labels[dimension]} {text}")
+    for dimension in ("fundamental", "price", "volume"):
+        if len(reasons) >= 3:
+            break
+        if not any(reason.startswith(labels[dimension]) for reason in reasons):
+            reasons.append(f"{labels[dimension]} {labels[f'missing_{dimension}']}")
+    return reasons[:5]
+
+
+def _remove_strategy_position_assumptions(dashboard: Dict[str, Any]) -> None:
+    core = dashboard.get("core_conclusion")
+    if isinstance(core, dict):
+        core.pop("position_advice", None)
+    battle = dashboard.get("battle_plan")
+    if isinstance(battle, dict):
+        battle.pop("position_strategy", None)
+
+
+def _build_fallback_strategy_signal(
+    result: AnalysisResult,
+    dashboard: Dict[str, Any],
+) -> Dict[str, Any]:
+    language = normalize_report_language(getattr(result, "report_language", "zh"))
+    definition = strategy_signal_definition_for_score(getattr(result, "sentiment_score", 50))
+    core = dashboard.get("core_conclusion")
+    core = core if isinstance(core, dict) else {}
+    phase = dashboard.get("phase_decision")
+    phase = phase if isinstance(phase, dict) else {}
+    battle = dashboard.get("battle_plan")
+    battle = battle if isinstance(battle, dict) else {}
+    sniper = battle.get("sniper_points")
+    sniper = sniper if isinstance(sniper, dict) else {}
+
+    summary = _first_strategy_text(
+        core.get("one_sentence"),
+        getattr(result, "analysis_summary", ""),
+        definition.label_for_language(language),
+    )
+    upgrade_trigger = _compact_strategy_text(phase.get("watch_conditions"))
+    if not upgrade_trigger:
+        upgrade_trigger = _localized_text(
+            language,
+            en="Wait for independent confirmation from price structure and volume or capital flow",
+            zh="等待价格结构与量价或资金形成独立确认",
+            ko="가격 구조와 거래량 또는 자금 흐름의 독립 확인을 기다립니다",
+        )
+    downgrade_trigger = _first_strategy_text(
+        sniper.get("stop_loss"),
+        getattr(result, "risk_warning", ""),
+    )
+    if not downgrade_trigger:
+        downgrade_trigger = _localized_text(
+            language,
+            en="Key structure fails or fundamental/event risk deteriorates",
+            zh="关键结构失效或基本面、事件风险恶化",
+            ko="핵심 구조가 무너지거나 펀더멘털·이벤트 리스크가 악화됩니다",
+        )
+
+    return {
+        "signal_code": definition.code,
+        "signal_label": definition.label_for_language(language),
+        "confidence": getattr(result, "confidence_level", None)
+        or _localized_text(language, en="Low", zh="低", ko="낮음"),
+        "summary": summary,
+        "reasons": _fallback_strategy_reasons(result, dashboard, language),
+        "upgrade_trigger": upgrade_trigger,
+        "downgrade_trigger": downgrade_trigger,
+    }
+
+
+def _synchronize_strategy_signal_after_stability(
+    result: AnalysisResult,
+    *,
+    signal_code: str,
+    reason: str,
+    confidence: Optional[str] = None,
+) -> bool:
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    strategy = normalize_strategy_signal_payload(
+        dashboard.get("strategy_signal"),
+        getattr(result, "report_language", "zh"),
+    )
+    definition = strategy_signal_definition(signal_code)
+    if strategy is None or definition is None:
+        return False
+
+    language = normalize_report_language(getattr(result, "report_language", "zh"))
+    strategy["signal_code"] = definition.code
+    strategy["signal_label"] = definition.label_for_language(language)
+    strategy["summary"] = reason
+    if confidence:
+        strategy["confidence"] = confidence
+    reason_prefix = _localized_text(
+        language,
+        en="[Risk constraint]",
+        zh="[风险约束]",
+        ko="[리스크 제약]",
+    )
+    reasons = [f"{reason_prefix} {reason}"]
+    reasons.extend(strategy.get("reasons") or [])
+    strategy["reasons"] = list(dict.fromkeys(reasons))[:5]
+    if definition.code == "watch":
+        strategy["upgrade_trigger"] = _localized_text(
+            language,
+            en="Capital-flow data recovers and independently confirms support or a valid breakout",
+            zh="资金流数据恢复，并独立确认支撑有效或形成有效突破",
+            ko="자금 흐름 데이터가 회복되고 지지 또는 유효 돌파를 독립적으로 확인합니다",
+        )
+    if not _is_meaningful_text(strategy.get("downgrade_trigger")):
+        strategy["downgrade_trigger"] = _localized_text(
+            language,
+            en="Key structure fails or fundamental/event risk deteriorates",
+            zh="关键结构失效或基本面、事件风险恶化",
+            ko="핵심 구조가 무너지거나 펀더멘털·이벤트 리스크가 악화됩니다",
+        )
+
+    calibration = dashboard.get("decision_score_calibration")
+    if not isinstance(calibration, dict):
+        calibration = {}
+        dashboard["decision_score_calibration"] = calibration
+    calibration.setdefault("raw_score", getattr(result, "sentiment_score", 50))
+    adjusted_score = align_score_to_strategy_signal(
+        definition.code,
+        getattr(result, "sentiment_score", 50),
+    )
+    if isinstance(adjusted_score, int):
+        result.sentiment_score = adjusted_score
+    result.operation_advice = strategy["signal_label"]
+    result.decision_type = definition.decision_type
+    if confidence:
+        result.confidence_level = localize_confidence_level(confidence, language)
+    action_fields = build_action_fields(
+        operation_advice=result.operation_advice,
+        explicit_action=definition.action,
+        report_language=language,
+        sentiment_score=result.sentiment_score,
+        align_with_score=False,
+    )
+    result.action = action_fields["action"]
+    result.action_label = action_fields["action_label"]
+
+    dashboard["strategy_signal"] = strategy
+    dashboard["sentiment_score"] = result.sentiment_score
+    dashboard["operation_advice"] = result.operation_advice
+    dashboard["decision_type"] = result.decision_type
+    dashboard["action"] = result.action
+    calibration.update(
+        {
+            "adjusted_score": result.sentiment_score,
+            "final_action": result.action,
+            "guardrail_reason": reason,
+            "calibration_source": "decision_stability",
+            "strategy_signal_code": definition.code,
+        }
+    )
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        core = {}
+        dashboard["core_conclusion"] = core
+    core["signal_type"] = f"🎯{strategy['signal_label']}"
+    core["one_sentence"] = f"{strategy['signal_label']}：{reason}"
+    _remove_strategy_position_assumptions(dashboard)
+    result.dashboard = dashboard
+    return True
+
+
 def populate_decision_action_fields(
     result: AnalysisResult,
     *,
@@ -1846,17 +2131,28 @@ def populate_decision_action_fields(
     report_type: Any = None,
     use_existing_action: bool = True,
     align_with_score: bool = True,
+    synthesize_strategy_signal: bool = False,
 ) -> AnalysisResult:
-    """Populate optional decision action fields without changing legacy advice."""
+    """Normalize strategy and action fields while preserving legacy compatibility."""
 
     action_source = explicit_action
-    dashboard = result.dashboard if isinstance(result.dashboard, dict) else None
-    strategy_payload = dashboard.get("strategy_signal") if dashboard else None
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    result.dashboard = dashboard
+    strategy_payload = dashboard.get("strategy_signal")
     normalized_strategy = normalize_strategy_signal_payload(
         strategy_payload,
         getattr(result, "report_language", "zh"),
     )
-    if normalized_strategy is not None and dashboard is not None:
+    strategy_was_synthesized = False
+    if (
+        synthesize_strategy_signal
+        and normalized_strategy is None
+        and getattr(result, "success", True)
+    ):
+        normalized_strategy = _build_fallback_strategy_signal(result, dashboard)
+        strategy_was_synthesized = True
+
+    if normalized_strategy is not None:
         definition = strategy_signal_definition(normalized_strategy["signal_code"])
         if definition is not None:
             dashboard["strategy_signal"] = normalized_strategy
@@ -1884,6 +2180,14 @@ def populate_decision_action_fields(
                         calibration["calibration_source"] = "strategy_signal"
                         calibration["strategy_signal_code"] = definition.code
 
+            if strategy_was_synthesized:
+                calibration = dashboard.get("decision_score_calibration")
+                if not isinstance(calibration, dict):
+                    calibration = {}
+                    dashboard["decision_score_calibration"] = calibration
+                calibration["strategy_signal_source"] = "score_fallback"
+                calibration["strategy_signal_code"] = definition.code
+
             result.operation_advice = normalized_strategy["signal_label"]
             result.decision_type = definition.decision_type
             confidence = str(normalized_strategy.get("confidence") or "").strip()
@@ -1893,6 +2197,7 @@ def populate_decision_action_fields(
                     getattr(result, "report_language", "zh"),
                 )
             action_source = definition.action
+            _remove_strategy_position_assumptions(dashboard)
 
     if action_source is None and use_existing_action:
         action_source = getattr(result, "action", None)
@@ -2126,7 +2431,7 @@ class GeminiAnalyzer:
 {default_skill_policy_section}
 {skills_section}
 
-""" + CANONICAL_DECISION_SCALE_PROMPT_ZH + MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH + """
+""" + MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH + """
 
 ## 输出格式：决策仪表盘 JSON
 
@@ -2137,21 +2442,26 @@ class GeminiAnalyzer:
     "stock_name": "股票中文名称",
     "sentiment_score": 0-100整数,
     "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
-    "operation_advice": "买入/加仓/持有/减仓/卖出/观望",
+    "operation_advice": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓",
     "decision_type": "buy/hold/sell",
-    "action": "buy/add/hold/reduce/sell/watch/avoid/alert",
+    "action": "buy/hold/reduce/sell/watch",
     "guardrail_reason": "当分数区间与最终 action 不一致时填写降级/升级原因，否则留空",
     "confidence_level": "高/中/低",
 
     "dashboard": {
+        "strategy_signal": {
+            "signal_code": "watch/low_buy/accumulate/hold/reduce/exit",
+            "signal_label": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓",
+            "confidence": "高/中/低",
+            "summary": "一句话综合结论",
+            "reasons": ["[基本面] 实际证据", "[价格结构] 实际证据", "[量价资金] 实际证据"],
+            "upgrade_trigger": "升级为更积极信号的可验证条件",
+            "downgrade_trigger": "降级或失效的可验证条件"
+        },
         "core_conclusion": {
             "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
-            "signal_type": "🟢买入信号/🟡持有观望/🔴卖出信号/⚠️风险警告",
-            "time_sensitivity": "立即行动/今日内/本周内/不急",
-            "position_advice": {
-                "no_position": "空仓者建议：具体操作指引",
-                "has_position": "持仓者建议：具体操作指引"
-            }
+            "signal_type": "🎯继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓",
+            "time_sensitivity": "立即行动/今日内/本周内/不急"
         },
 
         "data_perspective": {
@@ -2199,17 +2509,12 @@ class GeminiAnalyzer:
                 "stop_loss": "止损位：XX元（失效条件或X%风险）",
                 "take_profit": "目标位：XX元（按阻力位/风险回报比制定）"
             },
-            "position_strategy": {
-                "suggested_position": "通用风险暴露提示，不输出个性化仓位比例",
-                "entry_plan": "分批验证与触发条件，不假设用户实际持仓",
-                "risk_control": "风控策略描述"
-            },
             "action_checklist": [
                 "✅/⚠️/❌ 检查项1：当前结构是否满足激活技能条件",
                 "✅/⚠️/❌ 检查项2：入场位置与风险回报是否合理",
                 "✅/⚠️/❌ 检查项3：量价/波动/筹码是否支持判断",
                 "✅/⚠️/❌ 检查项4：无重大利空",
-                "✅/⚠️/❌ 检查项5：仓位与止损计划明确",
+                "✅/⚠️/❌ 检查项5：失效条件与风控边界明确",
                 "✅/⚠️/❌ 检查项6：估值/业绩/催化与结论匹配"
             ]
         },
@@ -2260,13 +2565,13 @@ class GeminiAnalyzer:
 
 ## 评分标准
 
-### 强烈买入（80-100分）：
+### 适合抢筹（80-100分）：
 - ✅ 多个激活技能同时支持积极结论
 - ✅ 上行空间、触发条件与风险回报清晰
-- ✅ 关键风险已排查，仓位与止损计划明确
+- ✅ 关键风险已排查，失效条件与风控边界明确
 - ✅ 重要数据和情报结论彼此一致
 
-### 买入（60-79分）：
+### 适合低吸（60-79分）：
 - ✅ 主信号偏积极，但仍有少量待确认项
 - ✅ 允许存在可控风险或次优入场点
 - ✅ 需要在报告中明确补充观察条件
@@ -2280,20 +2585,20 @@ class GeminiAnalyzer:
 - ⚠️ 风险与机会大致均衡
 - ⚠️ 更适合等待触发条件或回避不确定性
 
-### 减仓（20-39分）：
-- ⚠️ 主要结论转弱，风险明显高于收益
-- ⚠️ 触发了部分失效条件，现有仓位需要降低暴露
+### 适合减仓（20-39分）：
+- ⚠️ 主要结论转弱，但长期逻辑尚未确认反转
+- ⚠️ 触发了部分失效条件，现有风险暴露需要降低
 - ⚠️ 更适合保护收益而不是进攻
 
-### 卖出（0-19分）：
+### 适合清仓（0-19分）：
+- ❌ 主要结论转弱，风险明显高于收益
 - ❌ 触发了止损/失效条件或重大利空
-- ❌ 趋势或风险显著恶化
-- ❌ 现有仓位应优先退出
+- ❌ 长期逻辑或核心结构出现明确反转
 
 ## 决策仪表盘核心原则
 
-1. **核心结论先行**：一句话说清该买该卖
-2. **分持仓建议**：空仓者和持仓者给不同建议
+1. **核心结论先行**：一句话说清唯一六类策略信号
+2. **通用策略输出**：不读取或推断个人持仓、成本和仓位比例
 3. **参考点位有据**：有可靠行情和结构数据时给出具体价格；缺失时标记 N/A，不得编造
 4. **检查清单可视化**：用 ✅⚠️❌ 明确显示每项检查结果
 5. **风险优先级**：舆情中的风险点要醒目标出
@@ -3646,7 +3951,12 @@ class GeminiAnalyzer:
                 _emit_progress(parse_progress, f"{name}：LLM 返回完成，正在解析 JSON")
 
                 # 解析响应
-                result = self._parse_response(response_text, code, name)
+                result = self._parse_response(
+                    response_text,
+                    code,
+                    name,
+                    synthesize_strategy_signal=not use_legacy_default_prompt,
+                )
                 result.raw_response = response_text
                 result.search_performed = bool(news_context)
                 result.market_snapshot = self._build_market_snapshot(context)
@@ -4364,7 +4674,7 @@ class GeminiAnalyzer:
             if f == "sentiment_score":
                 lines.append("- sentiment_score: 0-100 综合评分")
             elif f == "operation_advice":
-                lines.append("- operation_advice: 买入/加仓/持有/减仓/卖出/观望")
+                lines.append("- operation_advice: 继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓")
             elif f == "analysis_summary":
                 lines.append("- analysis_summary: 综合分析摘要")
             elif f == "dashboard.core_conclusion.one_sentence":
@@ -4549,7 +4859,9 @@ class GeminiAnalyzer:
         self, 
         response_text: str, 
         code: str, 
-        name: str
+        name: str,
+        *,
+        synthesize_strategy_signal: bool = False,
     ) -> AnalysisResult:
         """
         解析 Gemini 响应（决策仪表盘版）
@@ -4644,6 +4956,7 @@ class GeminiAnalyzer:
                 result,
                 explicit_action=explicit_action,
                 align_with_score=False,
+                synthesize_strategy_signal=synthesize_strategy_signal,
             )
                 
         except json.JSONDecodeError as e:

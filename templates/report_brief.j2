@@ -1,6 +1,6 @@
 # 🎯 {{ report_date }} {{ labels.brief_title }}
 
-> {{ results|length }} {{ labels.stock_unit_compact }} | 🟢{{ buy_count }} 🟡{{ hold_count }} 🔴{{ sell_count }}
+> {{ results|length }} {{ labels.stock_unit_compact }} | {% if strategy_summary %}{% for item in strategy_summary %}{{ item.label }}:{{ item.count }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}🟢{{ buy_count }} 🟡{{ hold_count }} 🔴{{ sell_count }}{% endif %}
 {% if market_status_line %}
 {{ market_status_line }}
 {% endif %}

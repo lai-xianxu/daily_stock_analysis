@@ -1,7 +1,7 @@
 {% from '_macros.j2' import market_snapshot with context %}
 # 🎯 {{ report_date }} {{ labels.dashboard_title }}
 
-> {{ labels.analyzed_prefix }} **{{ results|length }}** {{ labels.stock_unit }} | 🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}
+> {{ labels.analyzed_prefix }} **{{ results|length }}** {{ labels.stock_unit }} | {% if strategy_summary %}{% for item in strategy_summary %}{{ item.label }}:{{ item.count }}{% if not loop.last %} · {% endif %}{% endfor %}{% else %}🟢{{ labels.buy_label }}:{{ buy_count }} 🟡{{ labels.watch_label }}:{{ hold_count }} 🔴{{ labels.sell_label }}:{{ sell_count }}{% endif %}
 {% if market_status_line %}
 {{ market_status_line }}
 {% endif %}
@@ -88,7 +88,7 @@
 ⏰ **{{ labels.time_sensitivity_label }}**: {{ core.get('time_sensitivity', labels.default_time_sensitivity) }}
 
 {% set pos_advice = core.get('position_advice', {}) %}
-{% if pos_advice %}
+{% if pos_advice and not strategy %}
 | {{ labels.position_status_label }} | {{ labels.action_advice_label }} |
 |---------|---------|
 | 🆕 **{{ labels.no_position_label }}** | {{ pos_advice.get('no_position', e.localized_operation_advice) }} |
@@ -205,7 +205,7 @@
 {% endif %}
 
 {% set position = battle.get('position_strategy', {}) %}
-{% if position %}
+{% if position and not strategy %}
 **💰 {{ labels.suggested_position_label }}**: {{ position.get('suggested_position', 'N/A') }}
 - {{ labels.entry_plan_label }}: {{ position.get('entry_plan', 'N/A') }}
 - {{ labels.risk_control_label }}: {{ position.get('risk_control', 'N/A') }}

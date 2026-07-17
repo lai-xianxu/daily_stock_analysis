@@ -513,6 +513,11 @@ class TimingStateAnalyzer:
         direction_is_weak = abs(return_20) < 0.08 and abs(ma20_slope) < 1.0
         accelerating_down = self._is_decline_accelerating(metrics, volume_state)
 
+        # A sharp recent sell-off can have a low 20-day efficiency ratio after
+        # reversing an earlier rally.  It is still a decline, not a quiet range.
+        if decline and accelerating_down:
+            return "declining", "accelerating_down", "watch"
+
         if low_efficiency and range_confirmation and direction_is_weak:
             return "range_bound", "neutral", "watch"
 

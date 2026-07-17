@@ -1,11 +1,13 @@
 """Deterministic OHLCV scenarios for the contrarian cycle timer."""
 
-from datetime import date
+from datetime import date, datetime, time
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
+from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
 from src.services.timing_state_analyzer import analyze_timing_state
 
 
@@ -44,6 +46,15 @@ def _range_bound() -> pd.DataFrame:
     close = 100 + np.sin(x) * 1.2
     volume = 900 + np.cos(x) * 60
     return _ohlcv(close, volume)
+
+
+def _low_efficiency_accelerating_selloff() -> pd.DataFrame:
+    head = 100 + np.sin(np.linspace(0, 12 * np.pi, 140))
+    tail = np.array(
+        [100, 99, 98, 97, 96, 96, 97, 99, 102, 106, 110, 114, 118, 122, 126, 120, 113, 107, 102, 99],
+        dtype=float,
+    )
+    return _ohlcv(np.r_[head, tail], np.full(160, 1000.0))
 
 
 def _healthy_advance() -> pd.DataFrame:
@@ -100,6 +111,15 @@ def test_range_bound_market_emits_watch() -> None:
     state = analyze_timing_state(_range_bound(), "TEST").to_dict()
 
     assert state["phase"] == "range_bound"
+    assert state["suggested_signal"] == "watch"
+
+
+def test_accelerating_selloff_is_not_misclassified_as_range_bound() -> None:
+    state = analyze_timing_state(_low_efficiency_accelerating_selloff(), "TEST").to_dict()
+
+    assert state["metrics"]["efficiency_ratio_20"] < 0.25
+    assert state["phase"] == "declining"
+    assert state["momentum_state"] == "accelerating_down"
     assert state["suggested_signal"] == "watch"
 
 
@@ -173,3 +193,80 @@ def test_pipeline_history_failure_falls_back_to_unknown_watch_not_legacy_score()
     assert state["phase"] == "unknown"
     assert state["suggested_signal"] == "watch"
     assert state["source"] == "timing_analysis_error"
+
+
+def test_pipeline_uses_validated_postmarket_quote_as_completed_daily_bar() -> None:
+    from src.core.pipeline import StockAnalysisPipeline
+
+    frame = _healthy_advance()
+    last_close = float(frame.iloc[-1]["close"])
+    target = (frame.iloc[-1]["date"] + pd.offsets.BDay(1)).date()
+    quote = UnifiedRealtimeQuote(
+        code="600519",
+        source=RealtimeSource.TENCENT,
+        provider_timestamp=datetime.combine(
+            target,
+            time(15, 30),
+            tzinfo=ZoneInfo("Asia/Shanghai"),
+        ).isoformat(),
+        price=last_close * 1.01,
+        pre_close=last_close,
+        open_price=last_close,
+        high=last_close * 1.02,
+        low=last_close * 0.99,
+        volume=1_200_000,
+        amount=150_000_000,
+        change_pct=1.0,
+        # A final close can exceed the intraday TTL by the time a long batch
+        # reaches this stock; its post-market provider timestamp remains valid.
+        is_stale=True,
+    )
+    pipeline = object.__new__(StockAnalysisPipeline)
+
+    with (
+        patch("src.services.history_loader.get_frozen_target_date", return_value=target),
+        patch("src.services.history_loader.load_history_df", return_value=(frame, "fixture")),
+        patch("src.core.pipeline.build_market_phase_context") as provider_phase,
+    ):
+        provider_phase.return_value.phase.value = "postmarket"
+        state = pipeline._load_timing_state(
+            "600519",
+            realtime_quote=quote,
+            market_phase="postmarket",
+        )
+
+    assert state is not None
+    assert state["completed_bar_date"] == target.isoformat()
+    assert state["metrics"]["current_price"] == round(quote.price, 4)
+    assert state["completed_bar_source"] == "realtime_close"
+    assert state["data_freshness"] == "current"
+    assert state["source"] == "fixture+realtime_close"
+
+
+def test_pipeline_rejects_stale_quote_for_completed_daily_bar() -> None:
+    from src.core.pipeline import StockAnalysisPipeline
+
+    frame = _healthy_advance()
+    target = (frame.iloc[-1]["date"] + pd.offsets.BDay(1)).date()
+    quote = UnifiedRealtimeQuote(
+        code="600519",
+        source=RealtimeSource.TENCENT,
+        price=125.0,
+        pre_close=float(frame.iloc[-1]["close"]),
+        open_price=124.0,
+        high=126.0,
+        low=123.0,
+        volume=1_000_000,
+        is_stale=True,
+    )
+
+    _, used_quote, reason = StockAnalysisPipeline._overlay_completed_realtime_bar(
+        frame,
+        quote,
+        code="600519",
+        target_date=target,
+        market_phase="postmarket",
+    )
+
+    assert used_quote is False
+    assert reason == "realtime_quote_stale"

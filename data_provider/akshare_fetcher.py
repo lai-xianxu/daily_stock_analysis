@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -64,6 +65,19 @@ TENCENT_REALTIME_ENDPOINT = "qt.gtimg.cn/q"
 _AKSHARE_HISTORY_CALL_TIMEOUT = 30.0
 _AKSHARE_TIMEOUT_PROCESS_JOIN_GRACE = 1.0
 _AKSHARE_TIMEOUT_PROCESS_START_METHOD = "spawn"
+
+
+def _parse_tencent_provider_timestamp(value: Any) -> Optional[str]:
+    """Convert Tencent's YYYYMMDDHHMMSS quote timestamp to an ISO value."""
+
+    text = str(value or "").strip()
+    if len(text) < 14 or not text[:14].isdigit():
+        return None
+    try:
+        parsed = datetime.strptime(text[:14], "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=ZoneInfo("Asia/Shanghai")).isoformat()
 
 
 # User-Agent 池，用于随机轮换
@@ -1312,6 +1326,11 @@ class AkshareFetcher(BaseFetcher):
                 code=stock_code,
                 name=fields[1] if len(fields) > 1 else "",
                 source=RealtimeSource.TENCENT,
+                provider_timestamp=(
+                    _parse_tencent_provider_timestamp(fields[30])
+                    if len(fields) > 30
+                    else None
+                ),
                 price=safe_float(fields[3]),
                 change_pct=safe_float(fields[32]),
                 change_amount=safe_float(fields[31]) if len(fields) > 31 else None,

@@ -415,7 +415,6 @@ git push
 4. Select run mode:
    - `full` - Full analysis (stocks + market)
    - `market-only` - Market review only
-   - `stocks-only` - Stock analysis only
 5. Click green **"Run workflow"** button
 
 #### 5. View Execution Logs
@@ -426,13 +425,13 @@ git push
 
 ### Schedule Details
 
-Default configuration: **Monday to Friday, 18:00 Beijing Time** auto-execution
+Default configuration: **Monday to Friday, 15:30 Beijing Time** auto-execution; stock analysis always continues with a market review
 
 Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '0 10 * * 1-5'  # UTC time, +8 = Beijing time
+  - cron: '30 7 * * 1-5'  # UTC time, +8 = Beijing time
 ```
 
 Common cron examples:
@@ -457,7 +456,7 @@ git push
 ### FAQ
 
 **Q: Why isn't the scheduled task running?**
-A: GitHub Actions scheduled tasks may have 5-15 minute delays, and only trigger when repo has activity. Long periods without commits may cause workflow to be disabled.
+A: GitHub Actions schedules can be delayed by platform queue load, and queued runs can be dropped under extreme load. Scheduled workflows in public repositories are automatically disabled after 60 days without repository activity; check the Actions history and workflow status.
 
 **Q: How to view historical reports?**
 A: Actions → Select run record → Artifacts → Download `analysis-reports-xxx`

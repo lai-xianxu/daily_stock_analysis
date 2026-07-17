@@ -10,6 +10,7 @@ Any expensive data preparation should be injected by the caller via extra_contex
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +45,16 @@ from src.utils.data_processing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_rendered_output(platform: str, output: str) -> str:
+    """Keep mobile notification templates from expanding Jinja control whitespace."""
+
+    if platform != "wechat":
+        return output
+    normalized = output.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n")).strip()
+    return re.sub(r"\n{3,}", "\n\n", normalized)
 
 
 def _escape_md(text: str) -> str:
@@ -387,7 +398,7 @@ def render(
             autoescape=select_autoescape(default=False),
         )
         template = env.get_template(template_name)
-        return template.render(**context)
+        return _normalize_rendered_output(platform, template.render(**context))
     except Exception as e:
         logger.warning("Report render failed for %s: %s", template_name, e)
         return None

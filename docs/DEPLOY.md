@@ -459,7 +459,6 @@ git push
 4. 选择运行模式：
    - `full` - 完整分析（股票+大盘）
    - `market-only` - 仅大盘复盘
-   - `stocks-only` - 仅股票分析
 5. 点击绿色 **"Run workflow"** 按钮
 
 #### 5. 查看执行日志
@@ -470,13 +469,13 @@ git push
 
 ### 定时说明
 
-默认配置：**周一到周五，北京时间 18:00** 自动执行
+默认配置：**周一到周五，北京时间 15:30** 自动执行；个股分析固定继续执行大盘复盘
 
 修改时间：编辑 `.github/workflows/00-daily-analysis.yml` 中的 cron 表达式：
 
 ```yaml
 schedule:
-  - cron: '0 10 * * 1-5'  # UTC 时间，+8 = 北京时间
+  - cron: '30 7 * * 1-5'  # UTC 时间，+8 = 北京时间
 ```
 
 常用 cron 示例：
@@ -501,7 +500,7 @@ git push
 ### 常见问题
 
 **Q: 为什么定时任务没有执行？**
-A: GitHub Actions 定时任务可能有 5-15 分钟延迟，且仅在仓库有活动时才触发。长时间无 commit 可能导致 workflow 被禁用。
+A: GitHub Actions 定时任务可能因平台排队而延迟，极端高负载时队列任务也可能被丢弃；公开仓库连续 60 天无活动时，定时 workflow 会被自动禁用。请在 Actions 页面检查运行记录和 workflow 启用状态。
 
 **Q: 如何查看历史报告？**
 A: Actions → 选择运行记录 → Artifacts → 下载 `analysis-reports-xxx`

@@ -266,6 +266,7 @@ class TestReportRenderer(unittest.TestCase):
         self.assertNotIn("评分", out)
         self.assertNotIn("理想买入点", out)
         self.assertNotIn("🟢买入:1", out)
+        self.assertNotIn("\n\n\n", out)
         for personalized_text in (
             "空仓者等待回踩",
             "持仓者控制三成仓位",

@@ -54,6 +54,7 @@ def _make_tencent_payload(
     turnover_rate: str = "0.69",
     circ_mv_yi: str = "0.93",
     total_mv_yi: str = "1.20",
+    provider_timestamp: str = "20260717153000",
 ) -> str:
     fields = ["0"] * 50
     fields[1] = "大秦铁路"
@@ -62,6 +63,7 @@ def _make_tencent_payload(
     fields[4] = "5.00"
     fields[5] = "5.10"
     fields[6] = volume
+    fields[30] = provider_timestamp
     fields[31] = "0.19"
     fields[32] = "3.80"
     fields[33] = "5.20"
@@ -162,6 +164,7 @@ def test_tencent_realtime_success_logs_endpoint(caplog, monkeypatch, akshare_fet
     assert quote.price == 5.19
     assert quote.volume == 123400
     assert quote.amount == 6404500
+    assert quote.provider_timestamp == "2026-07-17T15:30:00+08:00"
     assert breaker.successes == ["akshare_tencent"]
     assert f"endpoint={TENCENT_REALTIME_ENDPOINT}" in caplog.text
     assert "[实时行情-腾讯] 601006 大秦铁路:" in caplog.text

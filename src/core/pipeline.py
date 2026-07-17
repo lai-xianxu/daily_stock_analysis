@@ -549,7 +549,11 @@ class StockAnalysisPipeline:
             timing_state: Optional[Dict[str, Any]] = None
             if self._uses_volume_contraction_timing_strategy():
                 self._ensure_agent_history(code)
-                timing_state = self._load_timing_state(code)
+                timing_state = self._load_timing_state(
+                    code,
+                    realtime_quote=realtime_quote,
+                    market_phase=str(market_phase_context_dict.get("phase") or ""),
+                )
                 if timing_state:
                     logger.info(
                         "%s(%s) 周期状态: phase=%s, signal=%s, quality=%s",
@@ -1308,7 +1312,119 @@ class StockAnalysisPipeline:
         normalized = {str(item).strip().lower() for item in selected if str(item).strip()}
         return "all" in normalized or "volume_contraction_timing" in normalized
 
-    def _load_timing_state(self, code: str) -> Optional[Dict[str, Any]]:
+    @staticmethod
+    def _overlay_completed_realtime_bar(
+        df: pd.DataFrame,
+        realtime_quote: Any,
+        *,
+        code: str,
+        target_date: date,
+        market_phase: str,
+    ) -> Tuple[pd.DataFrame, bool, str]:
+        """Use a validated post-market quote when the daily provider is late."""
+
+        if df is None or df.empty or realtime_quote is None:
+            return df, False, "missing_history_or_quote"
+        if market_phase != "postmarket":
+            return df, False, "market_not_closed"
+        if "date" not in df.columns or "close" not in df.columns:
+            return df, False, "history_columns_missing"
+
+        def positive_float(value: Any) -> Optional[float]:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            return number if pd.notna(number) and number > 0 else None
+
+        close = positive_float(getattr(realtime_quote, "price", None))
+        open_price = positive_float(getattr(realtime_quote, "open_price", None))
+        high = positive_float(getattr(realtime_quote, "high", None))
+        low = positive_float(getattr(realtime_quote, "low", None))
+        volume = positive_float(getattr(realtime_quote, "volume", None))
+        if None in (close, open_price, high, low, volume):
+            return df, False, "realtime_ohlcv_incomplete"
+        if high < max(open_price, close) or low > min(open_price, close):
+            return df, False, "realtime_ohlcv_inconsistent"
+
+        provider_timestamp = getattr(realtime_quote, "provider_timestamp", None)
+        if provider_timestamp:
+            parsed_timestamp = pd.to_datetime(provider_timestamp, errors="coerce", utc=True)
+            if pd.isna(parsed_timestamp):
+                return df, False, "provider_timestamp_invalid"
+            market = get_market_for_stock(normalize_stock_code(code))
+            provider_time = parsed_timestamp.to_pydatetime()
+            provider_date = get_market_now(
+                market,
+                current_time=provider_time,
+            ).date()
+            if provider_date != target_date:
+                return df, False, "provider_date_mismatch"
+            provider_phase = build_market_phase_context(
+                market=market,
+                current_time=provider_time,
+            ).phase.value
+            if provider_phase != "postmarket":
+                return df, False, "provider_quote_not_closed"
+        elif getattr(realtime_quote, "is_stale", None) is True:
+            return df, False, "realtime_quote_stale"
+
+        bar_dates = pd.to_datetime(df["date"], errors="coerce")
+        valid_mask = bar_dates.notna() & (bar_dates.dt.date <= target_date)
+        if not valid_mask.any():
+            return df, False, "history_date_missing"
+
+        target_mask = valid_mask & (bar_dates.dt.date == target_date)
+        result = df.copy()
+        if target_mask.any():
+            row_index = bar_dates[target_mask].index[-1]
+        else:
+            prior_index = bar_dates[valid_mask].idxmax()
+            historical_close = positive_float(result.loc[prior_index, "close"])
+            previous_close = positive_float(getattr(realtime_quote, "pre_close", None))
+            if historical_close is None or previous_close is None:
+                return df, False, "previous_close_missing"
+            relative_gap = abs(historical_close - previous_close) / previous_close
+            if relative_gap > 0.05:
+                return df, False, "previous_close_scale_mismatch"
+
+            new_row = {
+                "code": code,
+                "date": pd.Timestamp(target_date),
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "amount": getattr(realtime_quote, "amount", None) or 0,
+                "pct_chg": getattr(realtime_quote, "change_pct", None) or 0,
+                "data_source": "realtime_close",
+            }
+            result = pd.concat([result, pd.DataFrame([new_row])], ignore_index=True)
+            return result, True, "realtime_close_appended"
+
+        updates = {
+            "date": pd.Timestamp(target_date),
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+            "amount": getattr(realtime_quote, "amount", None) or 0,
+            "pct_chg": getattr(realtime_quote, "change_pct", None) or 0,
+            "data_source": "realtime_close",
+        }
+        for column, value in updates.items():
+            result.loc[row_index, column] = value
+        return result, True, "realtime_close_updated"
+
+    def _load_timing_state(
+        self,
+        code: str,
+        *,
+        realtime_quote: Any = None,
+        market_phase: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """Compute the deterministic state from completed cached daily bars."""
 
         try:
@@ -1319,8 +1435,31 @@ class StockAnalysisPipeline:
             if target_date is None:
                 target_date = self._resolve_resume_target_date(code)
             df, source = load_history_df(code, days=240, target_date=target_date)
+            df, used_realtime_close, freshness_reason = self._overlay_completed_realtime_bar(
+                df,
+                realtime_quote,
+                code=code,
+                target_date=target_date,
+                market_phase=market_phase,
+            )
             payload = analyze_timing_state(df, code, target_date=target_date).to_dict()
-            payload["source"] = source
+            payload["source"] = (
+                f"{source}+realtime_close" if used_realtime_close else source
+            )
+            payload["completed_bar_source"] = (
+                "realtime_close" if used_realtime_close else "daily_history"
+            )
+            payload["data_freshness"] = (
+                "current" if payload.get("completed_bar_date") == target_date.isoformat() else "stale"
+            )
+            if payload["data_freshness"] == "stale":
+                payload["data_quality"] = "partial"
+                payload["confidence"] = "低"
+                payload.setdefault("limitations", []).append(
+                    f"目标收盘日为{target_date.isoformat()}，可用完整日线仅到"
+                    f"{payload.get('completed_bar_date') or '未知日期'}；"
+                    f"实时收盘补齐未采用({freshness_reason})"
+                )
             return payload
         except Exception as exc:
             logger.warning("[%s] Timing state analysis failed: %s", code, exc, exc_info=True)

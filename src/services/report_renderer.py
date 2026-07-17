@@ -73,6 +73,97 @@ def _clean_sniper_value(val: Any) -> str:
     return s
 
 
+def _compact_items(items: Any, item_limit: int = 64, total_limit: int = 190) -> str:
+    """Join report evidence without letting one stock dominate a notification."""
+
+    if not isinstance(items, (list, tuple)):
+        items = [items] if items else []
+    flattened: List[Any] = []
+    pending = list(items)
+    while pending:
+        item = pending.pop(0)
+        if isinstance(item, (list, tuple)):
+            pending[0:0] = list(item)
+        else:
+            flattened.append(item)
+
+    parts: List[str] = []
+    for item in flattened:
+        if item is None:
+            continue
+        text = " ".join(str(item).split())
+        if not text:
+            continue
+        if len(text) > item_limit:
+            text = text[: item_limit - 1] + "…"
+        candidate = "；".join(parts + [text])
+        if len(candidate) > total_limit:
+            break
+        parts.append(text)
+    return "；".join(parts)
+
+
+def _prioritize_external_reasons(items: Any) -> List[Any]:
+    if not isinstance(items, list):
+        return [items] if items else []
+    external_markers = ("基本面", "行业", "市场", "资金", "筹码", "新闻", "事件", "数据限制")
+    external = [item for item in items if any(marker in str(item) for marker in external_markers)]
+    remaining = [item for item in items if item not in external]
+    return external + remaining
+
+
+def _timing_label(kind: str, value: Any, language: str) -> str:
+    key = str(value or "unknown")
+    mappings = {
+        "phase": {
+            "declining": ("下跌过程", "Declining", "하락 구간"),
+            "declining_exhaustion": ("下跌衰竭", "Decline exhaustion", "하락 소진"),
+            "range_bound": ("横盘震荡", "Range-bound", "박스권"),
+            "advancing": ("健康上涨", "Healthy advance", "건전한 상승"),
+            "advancing_weakening": ("上涨动能衰减", "Advance weakening", "상승 동력 약화"),
+            "advancing_exhaustion": ("上涨极致", "Advance exhaustion", "상승 소진"),
+            "structural_risk": ("结构性风险", "Structural risk", "구조적 위험"),
+            "unknown": ("数据不足", "Insufficient data", "데이터 부족"),
+        },
+        "price_zone": {
+            "extreme_low": ("极低位", "Extreme low", "극저위"),
+            "low": ("低位", "Low", "저위"),
+            "mid": ("中位", "Mid-range", "중위"),
+            "high": ("高位", "High", "고위"),
+            "extreme_high": ("极高位", "Extreme high", "극고위"),
+        },
+        "volume_state": {
+            "extreme_contraction": ("极致缩量", "Extreme contraction", "극단적 거래량 축소"),
+            "contraction": ("缩量", "Volume contraction", "거래량 축소"),
+            "normal": ("常态量能", "Normal volume", "보통 거래량"),
+            "expansion": ("放量", "Volume expansion", "거래량 확대"),
+            "climax": ("高潮量", "Climactic volume", "거래량 클라이맥스"),
+            "unknown": ("量能不足", "Volume unavailable", "거래량 부족"),
+        },
+        "momentum_state": {
+            "decelerating_down": ("跌速放缓", "Decline decelerating", "하락세 둔화"),
+            "accelerating_down": ("下跌加速", "Decline accelerating", "하락 가속"),
+            "weak_down": ("弱势下行", "Weak decline", "약세 하락"),
+            "healthy_up": ("上涨健康", "Healthy momentum", "건전한 상승"),
+            "weakening_up": ("上涨转弱", "Momentum weakening", "상승세 약화"),
+            "exhausted_up": ("上涨衰竭", "Momentum exhausted", "상승 소진"),
+            "neutral": ("动能中性", "Neutral momentum", "중립 모멘텀"),
+            "unknown": ("动能不足", "Momentum unavailable", "모멘텀 부족"),
+        },
+        "data_quality": {
+            "full": ("完整", "Full", "충분"),
+            "partial": ("部分", "Partial", "부분"),
+            "insufficient": ("不足", "Insufficient", "부족"),
+            "unknown": ("不足", "Unknown", "부족"),
+        },
+    }
+    localized = mappings.get(kind, {}).get(key)
+    if not localized:
+        return key
+    index = {"zh": 0, "en": 1, "ko": 2}.get(language, 0)
+    return localized[index]
+
+
 def _resolve_templates_dir() -> Path:
     """Resolve template directory relative to project root."""
     config = get_config()
@@ -131,8 +222,22 @@ def render(
     )
     labels = get_report_labels(report_language)
 
-    # Build template context with pre-computed signal levels (sorted by score)
-    sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+    # Strategy reports are risk-first; legacy reports keep score ordering.
+    signal_priority = {"exit": 0, "reduce": 1, "accumulate": 2, "low_buy": 3, "watch": 4, "hold": 5}
+
+    def result_sort_key(result: AnalysisResult) -> tuple[int, float]:
+        dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+        strategy = normalize_strategy_signal_payload(dashboard.get("strategy_signal"), report_language)
+        code = strategy.get("signal_code") if strategy else None
+        if code in signal_priority:
+            return signal_priority[code], -float(getattr(result, "sentiment_score", 50) or 50)
+        return 99, -float(getattr(result, "sentiment_score", 50) or 50)
+
+    sorted_results = (
+        sorted(results, key=result_sort_key)
+        if platform == "wechat"
+        else sorted(results, key=lambda item: item.sentiment_score, reverse=True)
+    )
     sorted_enriched = []
     for r in sorted_results:
         display_action = display_action_fields_for_result(
@@ -144,6 +249,8 @@ def render(
             report_language=report_language,
         )
         dashboard = r.dashboard if isinstance(r.dashboard, dict) else {}
+        timing_state = dashboard.get("timing_state")
+        timing_state = timing_state if isinstance(timing_state, dict) else {}
         strategy_signal = normalize_strategy_signal_payload(
             dashboard.get("strategy_signal"),
             report_language,
@@ -175,6 +282,7 @@ def render(
             "signal_text": display_advice,
             "signal_emoji": se,
             "strategy_signal": strategy_signal,
+            "timing_state": timing_state,
             "display_decision_type": display_bucket,
             "stock_name": _escape_md(rn),
             "localized_operation_advice": display_advice,
@@ -191,7 +299,7 @@ def render(
         for entry in sorted_enriched:
             code = entry["strategy_signal"]["signal_code"]
             strategy_counts[code] = strategy_counts.get(code, 0) + 1
-        for code in ("accumulate", "low_buy", "hold", "watch", "reduce", "exit"):
+        for code in ("exit", "reduce", "accumulate", "low_buy", "watch", "hold"):
             count = strategy_counts.get(code, 0)
             definition = strategy_signal_definition(code)
             if count and definition is not None:
@@ -239,7 +347,7 @@ def render(
         "report_date": report_date,
         "report_timestamp": report_timestamp,
         "results": sorted_results,
-        "enriched": sorted_enriched,  # Sorted by sentiment_score desc
+        "enriched": sorted_enriched,
         "summary_only": summary_only,
         "buy_count": buy_count,
         "sell_count": sell_count,
@@ -252,6 +360,9 @@ def render(
         "market_status_line": market_status_line(),
         "escape_md": _escape_md,
         "clean_sniper": _clean_sniper_value,
+        "compact_items": _compact_items,
+        "prioritize_external_reasons": _prioritize_external_reasons,
+        "timing_label": lambda kind, value: _timing_label(kind, value, report_language),
         "failed_checks": failed_checks,
         "phase_pack_excerpt": phase_pack_excerpt,
         "history_by_code": {},

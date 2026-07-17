@@ -326,7 +326,7 @@ daily_stock_analysis/
 | `NOTIFICATION_MIN_SEVERITY` | 最低通知级别：info, warning, error, critical；留空保持现状 | 可选 |
 | `NOTIFICATION_DAILY_DIGEST_ENABLED` | 每日摘要预留开关；当前不会发送摘要 | 可选 |
 
-> 飞书聚合报告在文字模式下会发送六类策略信号优先的精简版，包含信号、理由、关键量价、风险和升级/失效条件；完整 Markdown 仍保存在本地报告或 GitHub Actions artifact。设置 `FEISHU_SEND_AS_FILE=true` 时，App Bot 改为发送完整 `.md` 文件。
+> 飞书聚合报告在文字模式下按清仓、减仓、抢筹、低吸、观察、持有的顺序发送周期择时精简版，展示价格分位、量能、动能确认、多维约束及与动作匹配的参考点位，不展示兼容评分。详细规则见 [反向周期择时策略](contrarian-cycle-timing.md)；完整 Markdown 仍保存在本地报告或 GitHub Actions artifact。设置 `FEISHU_SEND_AS_FILE=true` 时，App Bot 改为发送完整 `.md` 文件。
 
 > 说明：默认 `00-daily-analysis.yml` GitHub Actions workflow 只映射固定变量名，不会自动导入任意编号的 `STOCK_GROUP_N` / `EMAIL_GROUP_N`。因此分组邮箱目前仅在本地 `.env`、Docker 或其他已显式注入这些环境变量的运行环境中生效；若你要在自己的 GitHub Actions 中使用，需在 workflow 的 job `env:` 中逐组显式映射。
 

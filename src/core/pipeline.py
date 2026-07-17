@@ -546,6 +546,20 @@ class StockAnalysisPipeline:
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
 
+            timing_state: Optional[Dict[str, Any]] = None
+            if self._uses_volume_contraction_timing_strategy():
+                self._ensure_agent_history(code)
+                timing_state = self._load_timing_state(code)
+                if timing_state:
+                    logger.info(
+                        "%s(%s) 周期状态: phase=%s, signal=%s, quality=%s",
+                        stock_name,
+                        code,
+                        timing_state.get("phase"),
+                        timing_state.get("suggested_signal"),
+                        timing_state.get("data_quality"),
+                    )
+
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
                 self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
@@ -558,6 +572,7 @@ class StockAnalysisPipeline:
                     chip_data,
                     fundamental_context,
                     trend_result,
+                    timing_state=timing_state,
                     market_phase_context=market_phase_context_dict,
                     market_phase_summary=market_phase_summary,
                     daily_market_context=daily_market_context,
@@ -651,17 +666,20 @@ class StockAnalysisPipeline:
                 }
             
             # Step 6: 增强上下文数据（添加实时行情、筹码、趋势分析结果、股票名称）
+            context_trend_result = None if timing_state else trend_result
             enhanced_context = self._enhance_context(
                 context, 
                 realtime_quote, 
                 chip_data,
-                trend_result,
+                context_trend_result,
                 stock_name,  # 传入股票名称
                 fundamental_context,
                 market_phase_context=market_phase_context_dict,
                 portfolio_context=portfolio_context,
             )
             enhanced_context["market_phase_context"] = market_phase_context_dict
+            if timing_state:
+                enhanced_context["timing_state"] = timing_state
             self._attach_daily_market_context(
                 enhanced_context,
                 daily_market_context,
@@ -685,7 +703,7 @@ class StockAnalysisPipeline:
                     context=context,
                     enhanced_context=enhanced_context,
                     realtime_quote=realtime_quote,
-                    trend_result=trend_result,
+                    trend_result=context_trend_result,
                     chip_data=chip_data,
                     fundamental_context=fundamental_context,
                     news_context=news_context,
@@ -765,6 +783,10 @@ class StockAnalysisPipeline:
 
             # Step 7.7: price_position fallback
             if result:
+                if timing_state:
+                    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+                    dashboard["timing_state"] = dict(timing_state)
+                    result.dashboard = dashboard
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 action_source_advice = getattr(result, "operation_advice", None)
                 stabilize_decision_with_structure(result, trend_result, fundamental_context)
@@ -1273,6 +1295,57 @@ class StockAnalysisPipeline:
         except Exception as e:
             logger.warning("[%s] Agent history prefetch failed: %s", code, e)
 
+    def _uses_volume_contraction_timing_strategy(self) -> bool:
+        """Return whether the default contrarian timing strategy is active."""
+
+        selected = self.analysis_skills
+        if selected is None:
+            selected = getattr(self.config, "agent_skills", None)
+        if not selected:
+            return True
+        if isinstance(selected, str):
+            selected = selected.split(",")
+        normalized = {str(item).strip().lower() for item in selected if str(item).strip()}
+        return "all" in normalized or "volume_contraction_timing" in normalized
+
+    def _load_timing_state(self, code: str) -> Optional[Dict[str, Any]]:
+        """Compute the deterministic state from completed cached daily bars."""
+
+        try:
+            from src.services.history_loader import get_frozen_target_date, load_history_df
+            from src.services.timing_state_analyzer import analyze_timing_state
+
+            target_date = get_frozen_target_date()
+            if target_date is None:
+                target_date = self._resolve_resume_target_date(code)
+            df, source = load_history_df(code, days=240, target_date=target_date)
+            payload = analyze_timing_state(df, code, target_date=target_date).to_dict()
+            payload["source"] = source
+            return payload
+        except Exception as exc:
+            logger.warning("[%s] Timing state analysis failed: %s", code, exc, exc_info=True)
+            return {
+                "code": code,
+                "phase": "unknown",
+                "price_zone": "mid",
+                "volume_state": "unknown",
+                "momentum_state": "neutral",
+                "data_quality": "insufficient",
+                "suggested_signal": "watch",
+                "confidence": "低",
+                "summary": "周期数据不足，继续观察",
+                "evidence": [],
+                "limitations": ["周期状态计算失败，已按数据不足处理"],
+                "metrics": {},
+                "reference_points": {
+                    "zone_label": "观察区间",
+                    "zone": "N/A",
+                    "risk_label": "下一触发",
+                    "risk_line": "补齐已完成日线后重新评估",
+                },
+                "source": "timing_analysis_error",
+            }
+
     def _analyze_with_agent(
         self, 
         code: str, 
@@ -1284,6 +1357,7 @@ class StockAnalysisPipeline:
         fundamental_context: Optional[Dict[str, Any]] = None,
         trend_result: Optional[TrendAnalysisResult] = None,
         *,
+        timing_state: Optional[Dict[str, Any]] = None,
         market_phase_context: Optional[Dict[str, Any]] = None,
         market_phase_summary: Optional[Dict[str, Any]] = None,
         daily_market_context: Optional[DailyMarketContext] = None,
@@ -1331,7 +1405,9 @@ class StockAnalysisPipeline:
                 initial_context["realtime_quote"] = self._safe_to_dict(realtime_quote)
             if chip_data:
                 initial_context["chip_distribution"] = self._safe_to_dict(chip_data)
-            if trend_result:
+            if timing_state:
+                initial_context["timing_state"] = dict(timing_state)
+            elif trend_result:
                 initial_context["trend_result"] = self._safe_to_dict(trend_result)
 
             # Agent path: inject social sentiment as news_context so both
@@ -1364,9 +1440,8 @@ class StockAnalysisPipeline:
                 )
                 logger.info(f"[{code}] Agent mode: local intelligence evidence injected into news_context")
 
-            # Issue #1066: ensure deep history is in DB before agent tools run
-            self._ensure_agent_history(code)
-
+            if timing_state is None:
+                self._ensure_agent_history(code)
             analysis_context = self._load_agent_analysis_context(code, stock_name)
             market = get_market_for_stock(normalize_stock_code(code))
             (
@@ -1422,6 +1497,7 @@ class StockAnalysisPipeline:
                 report_type,
                 query_id,
                 trend_result=trend_result,
+                timing_state=timing_state,
                 synthesize_strategy_signal=not bool(
                     getattr(executor, "use_legacy_default_prompt", False)
                 ),
@@ -1464,6 +1540,10 @@ class StockAnalysisPipeline:
 
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
+                if timing_state:
+                    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+                    dashboard["timing_state"] = dict(timing_state)
+                    result.dashboard = dashboard
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
                 realtime_data = initial_context.get("realtime_quote", {})
                 if isinstance(realtime_data, dict):
@@ -1792,6 +1872,7 @@ class StockAnalysisPipeline:
         query_id: str,
         trend_result: Optional[TrendAnalysisResult] = None,
         *,
+        timing_state: Optional[Dict[str, Any]] = None,
         synthesize_strategy_signal: bool = False,
     ) -> AnalysisResult:
         """
@@ -1950,6 +2031,8 @@ class StockAnalysisPipeline:
             # methods (get_sniper_points, get_core_conclusion, etc.) expect that inner
             # structure, so we unwrap it here.
             result.dashboard = nested_dashboard or dash
+            if timing_state:
+                result.dashboard["timing_state"] = dict(timing_state)
             self._backfill_agent_dashboard_fields(result, trend_result, report_language)
         else:
             self._apply_trend_fallback(result, trend_result, report_language)
@@ -1969,6 +2052,10 @@ class StockAnalysisPipeline:
         explicit_action = dash.get("action") if isinstance(dash, dict) else None
         if explicit_action is None and isinstance(getattr(result, "dashboard", None), dict):
             explicit_action = result.dashboard.get("action")
+        if timing_state:
+            dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+            dashboard["timing_state"] = dict(timing_state)
+            result.dashboard = dashboard
         return populate_decision_action_fields(
             result,
             explicit_action=explicit_action,

@@ -22,6 +22,7 @@
 {% set battle = dashboard.get('battle_plan') or {} %}
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 {% set strategy = e.strategy_signal or {} %}
+{% set timing = e.timing_state or {} %}
 
 ## {{ e.signal_emoji }} {{ e.stock_name }} ({{ result.code }})
 
@@ -45,6 +46,12 @@
 {% endif %}
 {% if strategy.get('downgrade_trigger') %}
 **{{ labels.strategy_downgrade_trigger_label }}**: {{ strategy.get('downgrade_trigger') }}
+{% endif %}
+{% set refs = strategy.get('reference_points') or timing.get('reference_points') or {} %}
+{% if refs %}
+**{{ refs.get('zone_label') or labels.action_points_heading }}**: {{ refs.get('zone') or 'N/A' }}
+
+**{{ refs.get('risk_label') or labels.stop_loss_label }}**: {{ refs.get('risk_line') or 'N/A' }}
 {% endif %}
 
 {% endif %}
@@ -193,7 +200,7 @@
 ### 🎯 {{ labels.battle_plan_heading }}
 
 {% set sniper = battle.get('sniper_points', {}) %}
-{% if sniper %}
+{% if sniper and not strategy %}
 **📍 {{ labels.action_points_heading }}**
 
 | {{ labels.action_points_heading }} | {{ labels.current_price_label }} |

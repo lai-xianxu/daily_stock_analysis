@@ -8,7 +8,11 @@
 {% if summary_only %}
 **📊 {{ labels.summary_heading }}**
 {% for e in enriched %}
-{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ labels.score_label }} {{ e.result.sentiment_score }} | {{ e.localized_trend_prediction }}
+{% if e.strategy_signal %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ timing_label('phase', e.strategy_signal.get('cycle_phase') or e.timing_state.get('phase')) }} | {{ e.signal_text }} | {{ e.strategy_signal.get('confidence') or 'N/A' }}
+{% else %}
+{{ e.signal_emoji }} **{{ e.stock_name }}({{ e.result.code }})**: {{ e.signal_text }} | {{ e.localized_trend_prediction }}
+{% endif %}
 {% endfor %}
 {% else %}
 {% for e in enriched %}
@@ -19,47 +23,22 @@
 {% set intel = dashboard.get('intelligence') or {} %}
 {% set data_persp = dashboard.get('data_perspective') or {} %}
 {% set strategy = e.strategy_signal or {} %}
+{% set timing = e.timing_state or {} %}
+{% set timing_metrics = timing.get('metrics') or {} %}
+{% set refs = strategy.get('reference_points') or timing.get('reference_points') or {} %}
+{% set phase_decision = dashboard.get('phase_decision') or {} %}
 
 ### {{ e.signal_emoji }} **{{ e.signal_text }}** | {{ e.stock_name }}({{ result.code }})
 
 {% if strategy %}
-**🎯 {{ labels.strategy_signal_heading }}** | {{ labels.strategy_confidence_label }}: {{ strategy.get('confidence') or 'N/A' }} | {{ labels.score_label }}: {{ result.sentiment_score }}
-{% if strategy.get('summary') %}
-📌 {{ strategy.get('summary') }}
-{% endif %}
-{% if strategy.get('reasons') %}
-**{{ labels.strategy_reasons_label }}**:
-{% for reason in strategy.get('reasons')[:3] %}
-- {{ reason }}
-{% endfor %}
-{% endif %}
-{% set price = data_persp.get('price_position') or {} %}
-{% set volume = data_persp.get('volume_analysis') or {} %}
-{% if price.get('current_price') or price.get('support_level') or price.get('resistance_level') %}
-**{{ labels.price_metrics_label }}**: {{ labels.current_price_label }} {{ price.get('current_price', 'N/A') }} | {{ labels.support_level_label }} {{ price.get('support_level', 'N/A') }} | {{ labels.resistance_level_label }} {{ price.get('resistance_level', 'N/A') }}
-{% endif %}
-{% if volume %}
-**{{ labels.volume_label }}**: {{ labels.volume_ratio_label }} {{ volume.get('volume_ratio', 'N/A') }}{% if volume.get('volume_status') %} · {{ volume.get('volume_status') }}{% endif %}{% if volume.get('volume_meaning') %} · {{ volume.get('volume_meaning') }}{% endif %}
-{% endif %}
-{% if intel.get('risk_alerts') %}
-**🚨 {{ labels.risk_alerts_label }}**: {{ intel.get('risk_alerts')[0] }}
-{% elif result.risk_warning %}
-**🚨 {{ labels.risk_alerts_label }}**: {{ result.risk_warning }}
-{% endif %}
-{% if strategy.get('upgrade_trigger') %}
-**{{ labels.strategy_upgrade_trigger_label }}**: {{ strategy.get('upgrade_trigger') }}
-{% endif %}
-{% if strategy.get('downgrade_trigger') %}
-**{{ labels.strategy_downgrade_trigger_label }}**: {{ strategy.get('downgrade_trigger') }}
-{% endif %}
-{% set sniper = battle.get('sniper_points', {}) if battle else {} %}
-{% if sniper.ideal_buy or sniper.stop_loss or sniper.take_profit %}
-{% set ns = namespace(parts=[]) %}
-{% if sniper.ideal_buy %}{% set ns.parts = ns.parts + ['🎯' ~ labels.ideal_buy_label ~ ':' ~ clean_sniper(sniper.ideal_buy)] %}{% endif %}
-{% if sniper.stop_loss %}{% set ns.parts = ns.parts + ['🛑' ~ labels.stop_loss_label ~ ':' ~ clean_sniper(sniper.stop_loss)] %}{% endif %}
-{% if sniper.take_profit %}{% set ns.parts = ns.parts + ['🎊' ~ labels.take_profit_label ~ ':' ~ clean_sniper(sniper.take_profit)] %}{% endif %}
-{{ ns.parts|join(' | ') }}
-{% endif %}
+**周期**: {{ timing_label('phase', strategy.get('cycle_phase') or timing.get('phase')) }} | **信号**: {{ strategy.get('signal_label') }} | **{{ labels.strategy_confidence_label }}**: {{ strategy.get('confidence') or timing.get('confidence') or 'N/A' }}
+**价格**: {{ timing_label('price_zone', timing.get('price_zone') or strategy.get('price_zone')) }}{% if timing_metrics.get('price_percentile_120') is not none %} | 120日分位 {{ timing_metrics.get('price_percentile_120')|round(1) }}%{% endif %}{% if timing_metrics.get('current_price') is not none %} | 现价 {{ timing_metrics.get('current_price') }}{% endif %}
+**量能**: {{ timing_label('volume_state', timing.get('volume_state')) }}{% if timing_metrics.get('volume_percentile_120') is not none %} | 5日均量分位 {{ timing_metrics.get('volume_percentile_120')|round(1) }}%{% endif %}{% if timing_metrics.get('volume_ratio_5_20') is not none %} | 5/20量比 {{ timing_metrics.get('volume_ratio_5_20')|round(2) }}{% endif %}
+**动能/波动**: {{ timing_label('momentum_state', timing.get('momentum_state')) }}{% if timing.get('evidence') %} | {{ compact_items(timing.get('evidence')[2:], 48, 120) or compact_items(timing.get('evidence'), 48, 120) }}{% endif %}
+**多维约束**: {{ compact_items(prioritize_external_reasons(strategy.get('reasons')), 52, 150) or compact_items([strategy.get('summary')], 90, 100) }}
+**{{ refs.get('zone_label') or '参考点位' }}**: {{ refs.get('zone') or 'N/A' }} | **{{ refs.get('risk_label') or '风险线' }}**: {{ refs.get('risk_line') or 'N/A' }}
+**{{ labels.strategy_upgrade_trigger_label }}**: {{ compact_items([strategy.get('upgrade_trigger')], 110, 115) or 'N/A' }}
+**失效/风险**: {{ compact_items([strategy.get('downgrade_trigger'), intel.get('risk_alerts'), timing.get('limitations'), phase_decision.get('data_limitations')], 58, 170) or compact_items([result.risk_warning], 100, 110) or 'N/A' }}
 {% else %}
 {% set one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary %}
 {% if one_sentence %}

@@ -19,6 +19,40 @@ StrategySignalCode = Literal[
     "exit",
 ]
 
+TimingPhase = Literal[
+    "declining",
+    "declining_exhaustion",
+    "range_bound",
+    "advancing",
+    "advancing_weakening",
+    "advancing_exhaustion",
+    "structural_risk",
+    "unknown",
+]
+
+
+class TimingState(BaseModel):
+    """Deterministic cycle state computed from completed daily bars."""
+
+    code: Optional[str] = None
+    phase: TimingPhase = "unknown"
+    price_zone: str = "mid"
+    volume_state: str = "unknown"
+    momentum_state: str = "neutral"
+    data_quality: str = "insufficient"
+    suggested_signal: StrategySignalCode = "watch"
+    confidence: Optional[str] = None
+    summary: Optional[str] = None
+    completed_bar_date: Optional[str] = None
+    evidence: list[str] = Field(default_factory=list)
+    safety_evidence: list[str] = Field(default_factory=list)
+    weakening_evidence: list[str] = Field(default_factory=list)
+    weakening_dimensions: list[str] = Field(default_factory=list)
+    external_confirmation_dimensions: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    reference_points: dict[str, str] = Field(default_factory=dict)
+
 
 class StrategySignal(BaseModel):
     """Optional dashboard contract emitted by the multidimensional strategy."""
@@ -30,6 +64,9 @@ class StrategySignal(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     upgrade_trigger: Optional[str] = None
     downgrade_trigger: Optional[str] = None
+    cycle_phase: Optional[TimingPhase] = None
+    price_zone: Optional[str] = None
+    reference_points: dict[str, str] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -63,28 +100,20 @@ STRATEGY_SIGNAL_DEFINITIONS: tuple[StrategySignalDefinition, ...] = (
 
 
 MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
-## 多维择时策略契约
+## 反向周期择时策略契约
 
-`sentiment_score` 表示当前择时机会与风险，不代表公司的长期质量。先按层级判断，再输出唯一主信号；禁止用简单加权让重大风险被其他指标抵消。
+先读取系统提供的 `dashboard.timing_state` 或 `[系统计算的周期状态]`。该对象由已完成日线机械计算，是技术阶段的权威约束；不得用主观判断、单日涨跌或旧趋势评分改写阶段。`sentiment_score` 只是旧接口兼容字段，不参与信号选择。
 
-优先复用分析上下文中已有且时效有效的数据，仅在维度缺失时调用对应工具，避免重复请求。参考点位无可靠数据时必须标记 N/A，不得编造价格。
+1. **硬风险优先**：重大业绩恶化、财务或治理风险、监管处罚、退市风险等直接进入 `structural_risk/exit`，并否决任何超跌买入。
+2. **下跌低吸**：`declining` 阶段无需等待趋势反转，但必须同时具备低位、缩量、跌速未加快和独立安全证据。机器候选可直接采用；若机器只缺最后一项安全证据，模型可用方向明确的资金筹码、行业市场或基本面改善证据补足。加速下跌或放量破位只能 `watch`。
+3. **极限抢筹**：价格极低、量能极缩且跌速未加快时，至少再有一项动能、波动、承接或方向明确的外部改善证据才能输出 `accumulate`。模型可因基本面或市场风险降级为 `low_buy/watch`，不可绕过价格、量能和跌速前置条件。
+4. **横盘观察**：`range_bound` 固定为 `watch`，描述箱体上下沿和突破条件，不输出理想买点。
+5. **健康上涨**：`advancing` 默认 `hold`。高位或上涨本身绝不是买入依据；只有机器证据与方向明确的外部转弱证据合计满足后两条时，才可升级为减仓或清仓。
+6. **上涨减仓**：高位上涨须已有至少两个独立衰减维度才能 `reduce`，且至少一个不是成交量；机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数。
+7. **极致清仓**：价格极高且已有至少两个独立衰竭维度才能 `exit`，无需等待价格明显转头；价格极高或上涨缩量单独都不够。
+8. **数据约束**：资金流缺失只降低置信度，不能自动改变主信号；关键信息缺失必须披露，禁止编造数字或点位。
 
-1. **数据质量门槛**：检查行情、K 线、财务、资金与新闻的日期和完整性。数据缺失必须明确披露；关键信息缺失时不得输出高置信度的 `accumulate` 或 `exit`。
-2. **长期逻辑过滤**：综合盈利增长、现金流、负债、业绩预期、估值与行业地位。长期逻辑明显恶化时，超跌或缩量不能解释为低吸。
-3. **市场与行业环境**：结合大盘趋势、波动、行业强弱和个股相对强弱；高波动或行业转弱时降低进攻信号。
-4. **价格结构与位置**：判断支撑压力、均线结构、回撤、乖离、形态及止跌或转强确认。
-5. **量价、资金与筹码确认**：成交量不能独立决定信号，禁止由单一成交量指标下结论；必须与价格位置、资金流、筹码或相对强弱中的独立证据交叉确认。
-6. **事件风险否决**：重大业绩恶化、财务或治理风险、监管处罚、退市风险等优先于普通技术信号。
-
-唯一主信号与兼容字段必须遵守以下映射：
-- `exit`（适合清仓）：0-19，`action=sell`，`decision_type=sell`。
-- `reduce`（适合减仓）：20-39，`action=reduce`，`decision_type=sell`。
-- `watch`（继续观察）：40-49，`action=watch`，`decision_type=hold`。
-- `hold`（适合持有）：50-59，`action=hold`，`decision_type=hold`。
-- `low_buy`（适合低吸）：60-79，`action=buy`，`decision_type=buy`。
-- `accumulate`（适合抢筹）：80-100，`action=buy`，`decision_type=buy`。
-
-冲突处理：下跌缩量但没有止跌结构只能 `watch`；上涨缩量但距离压力位较远且长期逻辑强应为 `hold`；纯技术破位但长期逻辑未失效优先 `reduce` 而非 `exit`；基本面反转或重大硬风险可以否决超跌信号。不得读取或推断个人持仓、成本或仓位比例，不得把未经回测的固定阈值作为绝对触发条件。
+兼容动作映射保持：`watch→watch/hold`、`low_buy→buy/buy`、`accumulate→buy/buy`、`hold→hold/hold`、`reduce→reduce/sell`、`exit→sell/sell`。不得读取或推断个人持仓、成本和仓位比例。
 
 `dashboard` 必须包含以下对象：
 
@@ -96,11 +125,14 @@ MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
     "summary": "一句话综合结论",
     "reasons": ["[基本面] 实际证据", "[价格位置] 实际证据", "[量价资金] 实际证据"],
     "upgrade_trigger": "升级为更积极信号的可验证条件",
-    "downgrade_trigger": "降级或失效的可验证条件"
+    "downgrade_trigger": "降级或失效的可验证条件",
+    "cycle_phase": "declining/declining_exhaustion/range_bound/advancing/advancing_weakening/advancing_exhaustion/structural_risk/unknown",
+    "price_zone": "extreme_low/low/mid/high/extreme_high",
+    "reference_points": {"zone_label": "动作对应点位名称", "zone": "可靠价格区间或N/A", "risk_label": "失效或下一触发名称", "risk_line": "可靠价格或条件"}
 }
 ```
 
-`reasons` 必须有 3-5 条并覆盖至少三个独立维度，每条引用实际数据、结构或已检索事件；缺失数据要写明，禁止补造数字。`signal_code`、`signal_label`、`sentiment_score`、`operation_advice`、`action` 与 `decision_type` 必须一致。
+`reasons` 必须有 3-5 条并覆盖至少三个独立维度，每条引用实际数据、结构或已检索事件；缺失数据要写明，禁止补造数字。`signal_code`、`signal_label`、`operation_advice`、`action` 与 `decision_type` 必须一致；不要根据 `sentiment_score` 反推信号。
 """
 
 _DEFINITIONS_BY_CODE = {definition.code: definition for definition in STRATEGY_SIGNAL_DEFINITIONS}
@@ -128,6 +160,36 @@ def strategy_signal_definition_for_score(score: Any) -> StrategySignalDefinition
         if definition.min_score <= normalized_score <= definition.max_score:
             return definition
     return _DEFINITIONS_BY_CODE["hold"]
+
+
+def strategy_signal_definition_for_timing_state(payload: Any) -> StrategySignalDefinition:
+    """Resolve the deterministic candidate without consulting the legacy score."""
+
+    if isinstance(payload, Mapping):
+        suggested = strategy_signal_definition(payload.get("suggested_signal"))
+        if suggested is not None:
+            return suggested
+        phase = _normalize_code(payload.get("phase"))
+    else:
+        phase = ""
+    phase_defaults = {
+        "declining": "watch",
+        "declining_exhaustion": "accumulate",
+        "range_bound": "watch",
+        "advancing": "hold",
+        "advancing_weakening": "reduce",
+        "advancing_exhaustion": "exit",
+        "structural_risk": "exit",
+        "unknown": "watch",
+    }
+    return _DEFINITIONS_BY_CODE[phase_defaults.get(phase, "watch")]
+
+
+def compatibility_score_for_strategy_signal(code: Any) -> int:
+    """Return a stable legacy score that never participates in signal selection."""
+
+    definition = strategy_signal_definition(code) or _DEFINITIONS_BY_CODE["watch"]
+    return (definition.min_score + definition.max_score) // 2
 
 
 def align_score_to_strategy_signal(code: Any, score: Any) -> Any:

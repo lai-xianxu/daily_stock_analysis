@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.schemas.strategy_signal import StrategySignal
+from src.schemas.strategy_signal import StrategySignal, TimingState
 
 
 class PositionAdvice(BaseModel):
@@ -228,6 +228,7 @@ class Dashboard(BaseModel):
     phase_decision: Optional[PhaseDecision] = None
     signal_attribution: Optional[SignalAttribution] = None
     strategy_signal: Optional[StrategySignal] = None
+    timing_state: Optional[TimingState] = None
 
 
 class AnalysisReportSchema(BaseModel):

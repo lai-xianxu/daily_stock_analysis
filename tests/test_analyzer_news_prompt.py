@@ -143,9 +143,9 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         prompt = analyzer._get_analysis_system_prompt("zh", stock_code="002812")
 
         self.assertIn("可操作性与稳定性约束", prompt)
-        self.assertIn("不得仅因为单日涨跌", prompt)
-        self.assertIn("支撑/压力位", prompt)
-        self.assertIn("洗盘观察", prompt)
+        self.assertIn("`timing_state.phase`", prompt)
+        self.assertIn("高位和上涨阶段禁止低吸/抢筹", prompt)
+        self.assertIn("禁止所有状态都输出买点", prompt)
 
     def test_analysis_prompt_score_scale_matches_selected_prompt_mode(self) -> None:
         with patch.object(GeminiAnalyzer, "_init_litellm", return_value=None):
@@ -163,10 +163,11 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         current_prompt = current_analyzer._get_analysis_system_prompt("zh", stock_code="600519")
         legacy_prompt = legacy_analyzer._get_analysis_system_prompt("zh", stock_code="600519")
 
-        self.assertIn("### 适合减仓（20-39分）", current_prompt)
-        self.assertIn("### 适合清仓（0-19分）", current_prompt)
-        self.assertIn("`reduce`（适合减仓）：20-39", current_prompt)
-        self.assertIn("`exit`（适合清仓）：0-19", current_prompt)
+        self.assertIn("反向周期择时策略契约", current_prompt)
+        self.assertIn("`sentiment_score` 只是旧接口兼容字段，固定填 50", current_prompt)
+        self.assertIn("机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数", current_prompt)
+        self.assertIn("价格极高且已有至少两个独立衰竭维度才能 `exit`", current_prompt)
+        self.assertNotIn("### 适合减仓（20-39分）", current_prompt)
         self.assertNotIn("Canonical 评分与动作口径", current_prompt)
 
         self.assertIn("### 减仓（20-39分）", legacy_prompt)

@@ -71,7 +71,7 @@ def test_default_strategy_uses_multidimensional_gates_without_position_assumptio
     required_tools = {
         "get_realtime_quote",
         "get_daily_history",
-        "analyze_trend",
+        "analyze_timing_state",
         "get_volume_analysis",
         "get_stock_info",
         "get_market_indices",
@@ -91,8 +91,9 @@ def test_default_strategy_uses_multidimensional_gates_without_position_assumptio
         "量价、资金与筹码确认",
         "事件风险否决",
         "成交量不能独立决定",
-        "下跌缩量但没有止跌结构",
-        "上涨缩量但距离压力位较远",
+        "下跌缩量但跌速加快或放量破位",
+        "上涨缩量只是一个维度",
+        "资金流不可用只降低置信度",
     ):
         assert phrase in instructions
     for personalized_position_text in ("20%-30%", "25%-50%", "建议仓位", "持仓比例"):
@@ -116,14 +117,15 @@ def test_normal_and_agent_prompts_require_the_same_six_state_contract() -> None:
             assert code in prompt
         for phrase in (
             '"strategy_signal"',
+            '"timing_state"',
             '"action"',
             "3-5",
             "至少三个独立维度",
-            "单一成交量",
-            "事件风险否决",
-            "数据缺失",
-            "仅在维度缺失时调用对应工具",
-            "参考点位无可靠数据时必须标记 N/A",
+            "上涨缩量",
+            "重大业绩恶化",
+            "关键信息缺失",
+            "资金流缺失只降低置信度",
+            "禁止所有状态都输出买点",
         ):
             assert phrase in prompt
         assert '"operation_advice": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓"' in prompt
@@ -140,7 +142,7 @@ def test_agent_prompt_requests_every_multidimensional_data_tool() -> None:
     for tool_name in (
         "get_realtime_quote",
         "get_daily_history",
-        "analyze_trend",
+        "analyze_timing_state",
         "get_volume_analysis",
         "get_stock_info",
         "get_market_indices",
@@ -160,6 +162,21 @@ def test_report_schema_accepts_complete_and_missing_strategy_signal() -> None:
             "trend_prediction": "震荡",
             "operation_advice": "适合低吸",
             "dashboard": {
+                "timing_state": {
+                    "phase": "declining",
+                    "price_zone": "low",
+                    "volume_state": "contraction",
+                    "momentum_state": "decelerating_down",
+                    "data_quality": "full",
+                    "suggested_signal": "low_buy",
+                    "evidence": ["价格处于低分位", "跌速放缓"],
+                    "reference_points": {
+                        "zone_label": "低吸观察区",
+                        "zone": "28.50-30.00",
+                        "risk_label": "结构失效参考",
+                        "risk_line": "28.00",
+                    },
+                },
                 "strategy_signal": {
                     "signal_code": "low_buy",
                     "signal_label": "适合低吸",
@@ -172,6 +189,14 @@ def test_report_schema_accepts_complete_and_missing_strategy_signal() -> None:
                     ],
                     "upgrade_trigger": "放量收复短期结构",
                     "downgrade_trigger": "支撑失守且风险上升",
+                    "cycle_phase": "declining",
+                    "price_zone": "low",
+                    "reference_points": {
+                        "zone_label": "低吸观察区",
+                        "zone": "28.50-30.00",
+                        "risk_label": "结构失效参考",
+                        "risk_line": "28.00",
+                    },
                 }
             },
         }
@@ -189,6 +214,8 @@ def test_report_schema_accepts_complete_and_missing_strategy_signal() -> None:
     assert complete.dashboard is not None
     assert complete.dashboard.strategy_signal is not None
     assert complete.dashboard.strategy_signal.signal_code == "low_buy"
+    assert complete.dashboard.timing_state is not None
+    assert complete.dashboard.timing_state.phase == "declining"
     assert legacy.dashboard is not None
     assert legacy.dashboard.strategy_signal is None
 
@@ -288,3 +315,61 @@ def test_parser_without_valid_strategy_signal_synthesizes_six_state_contract() -
     assert any(reason.startswith("[价格结构]") for reason in strategy["reasons"])
     assert any(reason.startswith("[量价资金]") for reason in strategy["reasons"])
     assert result.dashboard["decision_score_calibration"]["strategy_signal_source"] == "score_fallback"
+
+
+def test_timing_state_corrects_model_signal_that_conflicts_with_cycle_phase() -> None:
+    analyzer = GeminiAnalyzer()
+    response = json.dumps(
+        {
+            "stock_name": "贵州茅台",
+            "sentiment_score": 92,
+            "trend_prediction": "强烈看多",
+            "operation_advice": "适合抢筹",
+            "decision_type": "buy",
+            "action": "buy",
+            "confidence_level": "高",
+            "analysis_summary": "高位继续买入",
+            "dashboard": {
+                "timing_state": {
+                    "phase": "advancing",
+                    "price_zone": "extreme_high",
+                    "volume_state": "normal",
+                    "momentum_state": "healthy_up",
+                    "data_quality": "full",
+                    "suggested_signal": "hold",
+                    "confidence": "中",
+                    "summary": "上涨结构健康，暂无退出证据",
+                    "evidence": ["[价格位置] 处于极高位", "[动能] 上涨结构仍健康"],
+                    "reference_points": {
+                        "zone_label": "持有防守参考",
+                        "zone": "1500.00",
+                        "risk_label": "转弱条件",
+                        "risk_line": "跌破防守位且动能恶化",
+                    },
+                },
+                "strategy_signal": {
+                    "signal_code": "accumulate",
+                    "signal_label": "适合抢筹",
+                    "confidence": "高",
+                    "summary": "高位继续买入",
+                    "reasons": ["[趋势] 股价很强"],
+                },
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    result = analyzer._parse_response(
+        response,
+        "600519",
+        "贵州茅台",
+        synthesize_strategy_signal=True,
+    )
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "hold"
+    assert result.operation_advice == "适合持有"
+    assert result.action == "hold"
+    assert result.sentiment_score == 54
+    assert strategy["cycle_phase"] == "advancing"
+    assert "周期约束" in strategy["summary"]

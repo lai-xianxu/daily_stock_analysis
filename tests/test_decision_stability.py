@@ -60,6 +60,32 @@ def _unsupported_fund_flow_caps() -> dict:
     return {"capital_flow": {"status": "NOT_SUPPORTED", "data": {"stock_flow": {"main_net_inflow": 0}}}}
 
 
+def _attach_timing_state(
+    result: AnalysisResult,
+    *,
+    phase: str = "declining",
+    signal: str = "low_buy",
+    confidence: str = "高",
+) -> None:
+    result.dashboard["timing_state"] = {
+        "phase": phase,
+        "price_zone": "low",
+        "volume_state": "contraction",
+        "momentum_state": "decelerating_down",
+        "data_quality": "full",
+        "suggested_signal": signal,
+        "confidence": confidence,
+        "summary": "下跌过程中量能和跌速收敛",
+        "evidence": ["[价格位置] 处于低位", "[动能] 跌速放缓"],
+        "reference_points": {
+            "zone_label": "低吸观察区",
+            "zone": "30.00-31.00",
+            "risk_label": "结构失效参考",
+            "risk_line": "29.50",
+        },
+    }
+
+
 def test_capital_flow_bias_is_unavailable_when_stock_flow_data_is_missing() -> None:
     assert _capital_flow_bias(_unsupported_fund_flow()) == "unavailable"
     assert _capital_flow_bias({"capital_flow": {"status": "ok", "data": {}}}) == "unavailable"
@@ -391,3 +417,245 @@ def test_refines_hold_pullback_near_support_as_shakeout_watch() -> None:
     assert result.decision_type == "hold"
     assert result.operation_advice == "洗盘观察"
     assert "更适合按洗盘观察处理" in result.risk_warning
+
+
+def test_timing_entry_survives_missing_capital_flow_with_lower_confidence() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=85,
+        current_price=30.4,
+        change_pct=-1.0,
+    )
+    _attach_timing_state(result)
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _unsupported_fund_flow(),
+    )
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "low_buy"
+    assert strategy["confidence"] == "中"
+    assert result.operation_advice == "适合低吸"
+    assert result.action == "buy"
+    assert any("仅下调置信度，不改变主信号" in reason for reason in strategy["reasons"])
+
+
+def test_material_fundamental_risk_overrides_extreme_low_accumulation() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合抢筹",
+        score=90,
+        current_price=30.0,
+        change_pct=-1.2,
+    )
+    _attach_timing_state(
+        result,
+        phase="declining_exhaustion",
+        signal="accumulate",
+    )
+    result.risk_warning = "公司被实施退市风险警示，审计无法表示意见"
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=800_000, five_day=1_200_000),
+    )
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "exit"
+    assert strategy["cycle_phase"] == "structural_risk"
+    assert strategy["reference_points"]["zone_label"] == "清仓触发"
+    assert "低吸" not in str(strategy["reference_points"])
+    assert "抢筹" not in str(strategy["reference_points"])
+    assert result.operation_advice == "适合清仓"
+    assert result.action == "sell"
+
+
+def test_generic_financial_data_limitation_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.risk_warning = "部分财务数据缺失，需后续验证"
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=0),
+    )
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_negated_material_risk_text_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.risk_warning = "未发现重大风险，但仍需跟踪行业需求"
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=0),
+    )
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_downgraded_exhaustion_watch_replaces_accumulation_points() -> None:
+    result = _result(
+        decision_type="hold",
+        operation_advice="继续观察",
+        score=44,
+        current_price=30.0,
+    )
+    _attach_timing_state(
+        result,
+        phase="declining_exhaustion",
+        signal="accumulate",
+        confidence="中",
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "watch",
+        "confidence": "中",
+        "summary": "基本面仍需验证，暂不抢筹",
+        "reasons": ["[基本面] 关键证据仍缺失"],
+    }
+
+    stabilize_decision_with_structure(
+        result,
+        SimpleNamespace(support_levels=[30.0], resistance_levels=[34.0]),
+        _fund_flow(main=0),
+    )
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "watch"
+    assert strategy["reference_points"]["zone_label"] == "震荡观察区"
+    assert "抢筹" not in strategy["reference_points"]["zone_label"]
+
+
+def test_external_capital_confirmation_can_complete_declining_low_buy() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=68,
+        current_price=30.2,
+    )
+    _attach_timing_state(result, phase="declining", signal="watch", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "momentum_state": "weak_down",
+            "metrics": {"price_percentile_120": 18.0, "support_20": 29.5, "resistance_20": 33.0},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "low_buy",
+        "confidence": "中",
+        "summary": "低位缩量下跌中，资金和筹码开始改善",
+        "reasons": ["[资金筹码] 主力资金回流，低位承接改善"],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=600_000))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "low_buy"
+    assert strategy["cycle_phase"] == "declining"
+    assert result.dashboard["timing_state"]["external_confirmation_dimensions"] == ["capital_chip"]
+
+
+def test_external_confirmation_cannot_override_accelerating_decline() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=68,
+        current_price=30.2,
+    )
+    _attach_timing_state(result, phase="declining", signal="watch", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "momentum_state": "accelerating_down",
+            "metrics": {"price_percentile_120": 18.0, "support_20": 29.5, "resistance_20": 33.0},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "low_buy",
+        "confidence": "中",
+        "summary": "资金回流但跌速仍在加快",
+        "reasons": ["[资金筹码] 主力资金回流，低位承接改善"],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=600_000))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "watch"
+
+
+def test_external_industry_weakness_completes_high_level_exit_evidence() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=48.0,
+    )
+    _attach_timing_state(result, phase="advancing", signal="hold", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "price_zone": "extreme_high",
+            "volume_state": "contraction",
+            "momentum_state": "healthy_up",
+            "weakening_dimensions": ["volume"],
+            "metrics": {"support_20": 42.0, "resistance_20": 48.5, "resistance_60": 49.0},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "exit",
+        "confidence": "中",
+        "summary": "极高位量价背离且行业相对强弱转弱",
+        "reasons": ["[行业市场] 行业相对强弱持续转弱，板块明显弱于大盘"],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=-800_000))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "exit"
+    assert strategy["cycle_phase"] == "advancing_exhaustion"
+    assert result.dashboard["timing_state"]["phase"] == "advancing"
+    assert result.trend_prediction == "上涨极致"
+
+
+def test_high_level_volume_weakness_alone_cannot_trigger_exit() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=48.0,
+    )
+    _attach_timing_state(result, phase="advancing", signal="hold", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "price_zone": "extreme_high",
+            "volume_state": "contraction",
+            "momentum_state": "healthy_up",
+            "weakening_dimensions": ["volume"],
+            "metrics": {"support_20": 42.0, "resistance_20": 48.5, "resistance_60": 49.0},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "exit",
+        "confidence": "中",
+        "summary": "极高位仅出现上涨缩量",
+        "reasons": ["[量能] 上涨缩量，5日均量继续收缩"],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "hold"

@@ -100,9 +100,11 @@ from src.schemas.decision_scale import (
 from src.schemas.strategy_signal import (
     MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH,
     align_score_to_strategy_signal,
+    compatibility_score_for_strategy_signal,
     normalize_strategy_signal_payload,
     strategy_signal_definition,
     strategy_signal_definition_for_score,
+    strategy_signal_definition_for_timing_state,
 )
 from src.schemas.report_schema import AnalysisReportSchema
 from src.market_context import detect_market, get_market_role, get_market_guidelines
@@ -1017,6 +1019,9 @@ def stabilize_decision_with_structure(
     try:
         language = normalize_report_language(getattr(result, "report_language", "zh"))
         dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+        if isinstance(dashboard.get("timing_state"), dict):
+            _apply_timing_state_guardrail(result, fundamental_context)
+            return
         data_perspective = dashboard.get("data_perspective") if isinstance(dashboard, dict) else {}
         if not isinstance(data_perspective, dict):
             data_perspective = {}
@@ -1197,6 +1202,73 @@ def _has_structural_risk_alert(result: "AnalysisResult") -> bool:
     if isinstance(core_conclusion, dict):
         signal_type = str(core_conclusion.get("signal_type", "")).strip()
         if _is_significant_structural_risk(signal_type):
+            return True
+    return False
+
+
+def _has_material_timing_risk_alert(result: "AnalysisResult") -> bool:
+    """Detect only material risks that may override a contrarian entry signal."""
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    timing_state = dashboard.get("timing_state")
+    if isinstance(timing_state, dict) and str(timing_state.get("phase")) == "structural_risk":
+        return True
+
+    texts: List[str] = [str(getattr(result, "risk_warning", "") or "")]
+    intelligence = dashboard.get("intelligence")
+    if isinstance(intelligence, dict):
+        alerts = intelligence.get("risk_alerts")
+        if isinstance(alerts, str):
+            texts.append(alerts)
+        elif isinstance(alerts, (list, tuple, set)):
+            texts.extend(str(item or "") for item in alerts)
+
+    hard_phrases = (
+        "重大利空",
+        "重大风险",
+        "退市风险",
+        "退市警示",
+        "财务造假",
+        "审计否定",
+        "无法表示意见",
+        "业绩大幅恶化",
+        "连续亏损",
+        "债务违约",
+        "流动性危机",
+        "破产",
+        "清算",
+        "监管立案",
+        "重大处罚",
+        "基本面反转",
+        "核心逻辑反转",
+        "爆雷",
+        "暴雷",
+        "material adverse",
+        "delisting risk",
+        "fraud",
+        "bankruptcy",
+        "default risk",
+        "fundamental reversal",
+    )
+    negated_phrases = (
+        "未发现重大风险",
+        "未见重大风险",
+        "暂无重大风险",
+        "无重大风险",
+        "未发现重大利空",
+        "未见重大利空",
+        "暂无重大利空",
+        "无重大利空",
+        "no material risk",
+        "no material adverse",
+    )
+    for value in texts:
+        normalized = value.lower().strip()
+        if not normalized:
+            continue
+        for negated in negated_phrases:
+            normalized = normalized.replace(negated, "")
+        if any(phrase in normalized for phrase in hard_phrases):
             return True
     return False
 
@@ -1981,7 +2053,13 @@ def _build_fallback_strategy_signal(
     dashboard: Dict[str, Any],
 ) -> Dict[str, Any]:
     language = normalize_report_language(getattr(result, "report_language", "zh"))
-    definition = strategy_signal_definition_for_score(getattr(result, "sentiment_score", 50))
+    timing_state = dashboard.get("timing_state")
+    timing_state = timing_state if isinstance(timing_state, dict) else None
+    definition = (
+        strategy_signal_definition_for_timing_state(timing_state)
+        if timing_state is not None
+        else strategy_signal_definition_for_score(getattr(result, "sentiment_score", 50))
+    )
     core = dashboard.get("core_conclusion")
     core = core if isinstance(core, dict) else {}
     phase = dashboard.get("phase_decision")
@@ -1992,6 +2070,7 @@ def _build_fallback_strategy_signal(
     sniper = sniper if isinstance(sniper, dict) else {}
 
     summary = _first_strategy_text(
+        timing_state.get("summary") if timing_state else None,
         core.get("one_sentence"),
         getattr(result, "analysis_summary", ""),
         definition.label_for_language(language),
@@ -2016,16 +2095,31 @@ def _build_fallback_strategy_signal(
             ko="핵심 구조가 무너지거나 펀더멘털·이벤트 리스크가 악화됩니다",
         )
 
-    return {
+    fallback_reasons = _fallback_strategy_reasons(result, dashboard, language)
+    if timing_state:
+        machine_evidence = timing_state.get("evidence")
+        if isinstance(machine_evidence, list):
+            machine_reasons = [str(item).strip() for item in machine_evidence if str(item).strip()]
+            fallback_reasons = list(dict.fromkeys(machine_reasons + fallback_reasons))[:5]
+
+    payload = {
         "signal_code": definition.code,
         "signal_label": definition.label_for_language(language),
-        "confidence": getattr(result, "confidence_level", None)
+        "confidence": (timing_state or {}).get("confidence")
+        or getattr(result, "confidence_level", None)
         or _localized_text(language, en="Low", zh="低", ko="낮음"),
         "summary": summary,
-        "reasons": _fallback_strategy_reasons(result, dashboard, language),
+        "reasons": fallback_reasons,
         "upgrade_trigger": upgrade_trigger,
         "downgrade_trigger": downgrade_trigger,
     }
+    if timing_state:
+        payload["cycle_phase"] = timing_state.get("phase")
+        payload["price_zone"] = timing_state.get("price_zone")
+        references = timing_state.get("reference_points")
+        if isinstance(references, dict):
+            payload["reference_points"] = dict(references)
+    return payload
 
 
 def _synchronize_strategy_signal_after_stability(
@@ -2124,6 +2218,433 @@ def _synchronize_strategy_signal_after_stability(
     return True
 
 
+def _localized_cycle_phase(phase: str, language: str) -> str:
+    labels = {
+        "zh": {
+            "declining": "下跌过程",
+            "declining_exhaustion": "下跌衰竭",
+            "range_bound": "横盘震荡",
+            "advancing": "健康上涨",
+            "advancing_weakening": "上涨动能衰减",
+            "advancing_exhaustion": "上涨极致",
+            "structural_risk": "结构性风险",
+            "unknown": "阶段未知",
+        },
+        "en": {
+            "declining": "Declining",
+            "declining_exhaustion": "Decline exhaustion",
+            "range_bound": "Range-bound",
+            "advancing": "Healthy advance",
+            "advancing_weakening": "Weakening advance",
+            "advancing_exhaustion": "Advance exhaustion",
+            "structural_risk": "Structural risk",
+            "unknown": "Unknown phase",
+        },
+        "ko": {
+            "declining": "하락 진행",
+            "declining_exhaustion": "하락 소진",
+            "range_bound": "박스권 횡보",
+            "advancing": "건전한 상승",
+            "advancing_weakening": "상승 동력 약화",
+            "advancing_exhaustion": "상승 소진",
+            "structural_risk": "구조적 위험",
+            "unknown": "단계 불명",
+        },
+    }
+    return labels.get(language, labels["en"]).get(phase, phase or labels.get(language, labels["en"])["unknown"])
+
+
+def _timing_allowed_signals(timing_state: Dict[str, Any]) -> set[str]:
+    phase = str(timing_state.get("phase") or "unknown")
+    suggested = str(timing_state.get("suggested_signal") or "watch")
+    if phase == "declining_exhaustion":
+        return {"watch", "low_buy", "accumulate"}
+    if phase == "declining":
+        return {"watch", "low_buy"} if suggested == "low_buy" else {"watch"}
+    fixed = {
+        "range_bound": "watch",
+        "advancing": "hold",
+        "advancing_weakening": "reduce",
+        "advancing_exhaustion": "exit",
+        "structural_risk": "exit",
+        "unknown": "watch",
+    }
+    return {fixed.get(phase, "watch")}
+
+
+def _timing_default_signal(timing_state: Dict[str, Any]) -> str:
+    phase = str(timing_state.get("phase") or "unknown")
+    suggested = str(timing_state.get("suggested_signal") or "watch")
+    if phase == "declining_exhaustion":
+        return suggested if suggested in {"watch", "low_buy", "accumulate"} else "watch"
+    if phase == "declining":
+        return "low_buy" if suggested == "low_buy" else "watch"
+    return {
+        "range_bound": "watch",
+        "advancing": "hold",
+        "advancing_weakening": "reduce",
+        "advancing_exhaustion": "exit",
+        "structural_risk": "exit",
+        "unknown": "watch",
+    }.get(phase, "watch")
+
+
+def _timing_external_confirmation_dimensions(
+    strategy: Dict[str, Any],
+    *,
+    intent: str,
+) -> set[str]:
+    """Extract directional non-OHLCV confirmation dimensions from LLM reasons."""
+
+    dimension_terms = {
+        "capital_chip": (
+            "资金",
+            "主力",
+            "筹码",
+            "北向",
+            "capital flow",
+            "fund flow",
+            "institutional",
+            "chip",
+            "accumulation",
+            "distribution",
+        ),
+        "industry_market": (
+            "行业",
+            "板块",
+            "大盘",
+            "相对强弱",
+            "sector",
+            "industry",
+            "benchmark",
+            "relative strength",
+        ),
+        "fundamental": (
+            "基本面",
+            "业绩",
+            "盈利",
+            "利润",
+            "营收",
+            "现金流",
+            "负债",
+            "估值",
+            "订单",
+            "fundamental",
+            "earnings",
+            "profit",
+            "revenue",
+            "cash flow",
+            "valuation",
+            "balance sheet",
+        ),
+    }
+    directional_terms = {
+        "safety": (
+            "稳定",
+            "改善",
+            "回流",
+            "流入",
+            "承接",
+            "企稳",
+            "未恶化",
+            "未反转",
+            "未发生重大",
+            "健康",
+            "低估",
+            "修复",
+            "韧性",
+            "stabil",
+            "improv",
+            "inflow",
+            "support",
+            "resilien",
+            "undervalu",
+        ),
+        "weakening": (
+            "转弱",
+            "弱于",
+            "衰减",
+            "流出",
+            "派发",
+            "恶化",
+            "下修",
+            "放缓",
+            "下降",
+            "回落",
+            "承压",
+            "减持",
+            "亏损",
+            "高估",
+            "景气下行",
+            "weaken",
+            "outflow",
+            "deteriorat",
+            "downgrade",
+            "slowdown",
+            "declin",
+            "overvalu",
+            "distribution",
+        ),
+    }
+    cues = directional_terms.get(intent, ())
+    if not cues:
+        return set()
+
+    raw_reasons = strategy.get("reasons")
+    reasons = list(raw_reasons) if isinstance(raw_reasons, (list, tuple, set)) else []
+    if _is_meaningful_text(strategy.get("summary")):
+        reasons.append(strategy.get("summary"))
+
+    dimensions: set[str] = set()
+    for reason in reasons:
+        text = str(reason or "").strip().casefold()
+        if not text or not any(cue in text for cue in cues):
+            continue
+        for dimension, terms in dimension_terms.items():
+            if any(term in text for term in terms):
+                dimensions.add(dimension)
+    return dimensions
+
+
+def _timing_model_confirmed_signal(
+    timing_state: Dict[str, Any],
+    strategy: Dict[str, Any],
+) -> Optional[Tuple[str, str, set[str]]]:
+    """Allow external evidence to complete, but never bypass, phase constraints."""
+
+    phase = str(timing_state.get("phase") or "unknown")
+    original_code = str(strategy.get("signal_code") or "watch")
+    price_zone = str(timing_state.get("price_zone") or "mid")
+    volume_state = str(timing_state.get("volume_state") or "unknown")
+    momentum_state = str(timing_state.get("momentum_state") or "neutral")
+    metrics = timing_state.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+
+    if phase == "declining" and original_code in {"low_buy", "accumulate"}:
+        external = _timing_external_confirmation_dimensions(strategy, intent="safety")
+        if not external or momentum_state == "accelerating_down":
+            return None
+        if (
+            original_code == "accumulate"
+            and price_zone == "extreme_low"
+            and volume_state == "extreme_contraction"
+        ):
+            return "accumulate", "declining_exhaustion", external
+
+        price_percentile = _coerce_numeric_value(metrics.get("price_percentile_120"))
+        if (
+            original_code == "low_buy"
+            and price_zone in {"extreme_low", "low", "mid"}
+            and price_percentile is not None
+            and price_percentile <= 40
+            and volume_state in {"contraction", "extreme_contraction"}
+        ):
+            return "low_buy", "declining", external
+
+    if phase == "advancing" and original_code in {"reduce", "exit"}:
+        if price_zone not in {"high", "extreme_high"}:
+            return None
+        machine_raw = timing_state.get("weakening_dimensions")
+        machine_dimensions = {
+            str(item).strip()
+            for item in machine_raw
+            if str(item).strip()
+        } if isinstance(machine_raw, (list, tuple, set)) else set()
+        external = _timing_external_confirmation_dimensions(strategy, intent="weakening")
+        combined = machine_dimensions | external
+        if len(combined) < 2 or not (combined - {"volume"}):
+            return None
+        if original_code == "exit" and price_zone == "extreme_high":
+            return "exit", "advancing_exhaustion", external
+        return "reduce", "advancing_weakening", external
+
+    return None
+
+
+def _timing_reference_points_for_signal(
+    timing_state: Dict[str, Any],
+    signal_code: str,
+    *,
+    hard_risk: bool = False,
+) -> Dict[str, str]:
+    if hard_risk:
+        return {
+            "zone_label": "清仓触发",
+            "zone": "重大基本面或结构性风险已触发",
+            "risk_label": "重新评估条件",
+            "risk_line": "风险解除且基本面恢复后重新评估",
+        }
+
+    references = timing_state.get("reference_points")
+    points = dict(references) if isinstance(references, dict) else {}
+    labels = {
+        "low_buy": ("低吸观察区", "结构失效参考"),
+        "accumulate": ("抢筹观察区", "结构失效参考"),
+        "watch": ("震荡观察区", "下一触发"),
+        "hold": ("持有防守参考", "转弱条件"),
+        "reduce": ("减仓压力区", "重新转强参考"),
+        "exit": ("清仓触发区", "重新转强参考"),
+    }
+    zone_label, risk_label = labels.get(signal_code, ("参考区间", "风险线"))
+    points["zone_label"] = zone_label
+    points["risk_label"] = risk_label
+
+    if signal_code == "watch":
+        metrics = timing_state.get("metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        support = _coerce_numeric_value(metrics.get("support_20"))
+        resistance = _coerce_numeric_value(metrics.get("resistance_20"))
+        if support is not None and resistance is not None:
+            low, high = sorted((support, resistance))
+            points["zone"] = f"{low:.2f}-{high:.2f}"
+        points["risk_line"] = "放量突破上沿或跌破下沿后重新评估"
+
+    points.setdefault("zone", "N/A")
+    points.setdefault("risk_line", "N/A")
+    return {str(key): str(value) for key, value in points.items()}
+
+
+def _apply_timing_state_guardrail(
+    result: AnalysisResult,
+    fundamental_context: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Make deterministic cycle state authoritative over LLM/legacy scores."""
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    timing_state = dashboard.get("timing_state")
+    if not isinstance(timing_state, dict):
+        return False
+
+    language = normalize_report_language(getattr(result, "report_language", "zh"))
+    strategy = normalize_strategy_signal_payload(dashboard.get("strategy_signal"), language)
+    if strategy is None:
+        strategy = _build_fallback_strategy_signal(result, dashboard)
+
+    original_code = str(strategy.get("signal_code") or "watch")
+    hard_risk = _has_material_timing_risk_alert(result)
+    decision_phase = str(timing_state.get("phase") or "unknown")
+    if hard_risk:
+        target_code = "exit"
+        timing_state["phase"] = "structural_risk"
+        timing_state["suggested_signal"] = "exit"
+        decision_phase = "structural_risk"
+        timing_state["summary"] = _localized_text(
+            language,
+            en="A material fundamental or structural risk overrides technical timing",
+            zh="重大基本面或结构性风险优先于技术择时",
+            ko="중대한 펀더멘털 또는 구조적 위험이 기술적 타이밍보다 우선합니다",
+        )
+    else:
+        externally_confirmed = _timing_model_confirmed_signal(timing_state, strategy)
+        if externally_confirmed is not None:
+            target_code, decision_phase, external_dimensions = externally_confirmed
+            timing_state["external_confirmation_dimensions"] = sorted(external_dimensions)
+        else:
+            allowed = _timing_allowed_signals(timing_state)
+            target_code = original_code if original_code in allowed else _timing_default_signal(timing_state)
+
+    definition = strategy_signal_definition(target_code)
+    if definition is None:
+        definition = strategy_signal_definition("watch")
+    if definition is None:
+        return False
+
+    phase = str(timing_state.get("phase") or "unknown")
+    strategy["signal_code"] = definition.code
+    strategy["signal_label"] = definition.label_for_language(language)
+    strategy["cycle_phase"] = decision_phase
+    strategy["price_zone"] = str(timing_state.get("price_zone") or "mid")
+    references = _timing_reference_points_for_signal(
+        timing_state,
+        definition.code,
+        hard_risk=hard_risk,
+    )
+    timing_state["reference_points"] = references
+    strategy["reference_points"] = references
+
+    reasons = list(strategy.get("reasons") or [])
+    machine_evidence = timing_state.get("evidence")
+    if isinstance(machine_evidence, list):
+        reasons.extend(str(item).strip() for item in machine_evidence if str(item).strip())
+    if original_code != definition.code:
+        correction = _localized_text(
+            language,
+            en=f"[Cycle constraint] {original_code} conflicts with {phase}; corrected to {definition.code}",
+            zh=f"[周期约束] {original_code} 与阶段 {phase} 冲突，已校正为 {definition.code}",
+            ko=f"[주기 제약] {original_code} 신호가 {phase} 단계와 충돌하여 {definition.code}(으)로 수정했습니다",
+        )
+        reasons.insert(0, correction)
+        strategy["summary"] = correction
+    elif not _is_meaningful_text(strategy.get("summary")):
+        strategy["summary"] = _first_strategy_text(timing_state.get("summary"), definition.label_for_language(language))
+    strategy["reasons"] = list(dict.fromkeys(reasons))[:5]
+
+    confidence = str(strategy.get("confidence") or timing_state.get("confidence") or "低").strip()
+    flow_bias, flow_reason = _capital_flow_bias_with_status(fundamental_context)
+    if (
+        fundamental_context is not None
+        and definition.code in {"low_buy", "accumulate", "reduce", "exit"}
+        and flow_bias == "unavailable"
+    ):
+        if confidence.lower() in {"高", "high", "높음"}:
+            confidence = _localized_text(language, en="Medium", zh="中", ko="보통")
+        flow_note = _localized_text(
+            language,
+            en=f"[Data limitation] Capital flow unavailable ({flow_reason}); confidence reduced without changing the signal",
+            zh=f"[数据限制] 资金流不可用（{flow_reason}），仅下调置信度，不改变主信号",
+            ko=f"[데이터 제한] 자금 흐름을 사용할 수 없어({flow_reason}) 신호는 유지하고 확신도만 낮춥니다",
+        )
+        strategy["reasons"] = list(dict.fromkeys(strategy["reasons"][:4] + [flow_note]))
+    strategy["confidence"] = confidence
+
+    raw_score = getattr(result, "sentiment_score", 50)
+    compatibility_score = compatibility_score_for_strategy_signal(definition.code)
+    result.sentiment_score = compatibility_score
+    result.operation_advice = strategy["signal_label"]
+    result.decision_type = definition.decision_type
+    result.confidence_level = localize_confidence_level(confidence, language)
+    result.trend_prediction = _localized_cycle_phase(decision_phase, language)
+    action_fields = build_action_fields(
+        operation_advice=result.operation_advice,
+        explicit_action=definition.action,
+        report_language=language,
+        sentiment_score=compatibility_score,
+        align_with_score=False,
+    )
+    result.action = action_fields["action"]
+    result.action_label = action_fields["action_label"]
+
+    dashboard["timing_state"] = timing_state
+    dashboard["strategy_signal"] = strategy
+    dashboard["sentiment_score"] = compatibility_score
+    dashboard["operation_advice"] = result.operation_advice
+    dashboard["decision_type"] = result.decision_type
+    dashboard["action"] = result.action
+    calibration = dashboard.get("decision_score_calibration")
+    if not isinstance(calibration, dict):
+        calibration = {}
+        dashboard["decision_score_calibration"] = calibration
+    calibration.update(
+        {
+            "raw_score": raw_score,
+            "adjusted_score": compatibility_score,
+            "final_action": result.action,
+            "calibration_source": "timing_state",
+            "strategy_signal_code": definition.code,
+            "guardrail_reason": f"cycle_phase={decision_phase}",
+        }
+    )
+    core = dashboard.get("core_conclusion")
+    if not isinstance(core, dict):
+        core = {}
+        dashboard["core_conclusion"] = core
+    core["signal_type"] = f"🎯{strategy['signal_label']}"
+    core["one_sentence"] = _first_strategy_text(strategy.get("summary"), timing_state.get("summary"))
+    _remove_strategy_position_assumptions(dashboard)
+    result.dashboard = dashboard
+    return True
+
+
 def populate_decision_action_fields(
     result: AnalysisResult,
     *,
@@ -2185,7 +2706,11 @@ def populate_decision_action_fields(
                 if not isinstance(calibration, dict):
                     calibration = {}
                     dashboard["decision_score_calibration"] = calibration
-                calibration["strategy_signal_source"] = "score_fallback"
+                calibration["strategy_signal_source"] = (
+                    "timing_state_fallback"
+                    if isinstance(dashboard.get("timing_state"), dict)
+                    else "score_fallback"
+                )
                 calibration["strategy_signal_code"] = definition.code
 
             result.operation_advice = normalized_strategy["signal_label"]
@@ -2213,6 +2738,7 @@ def populate_decision_action_fields(
     )
     result.action = fields["action"]
     result.action_label = fields["action_label"]
+    _apply_timing_state_guardrail(result)
     return result
 
 
@@ -2440,12 +2966,12 @@ class GeminiAnalyzer:
 ```json
 {
     "stock_name": "股票中文名称",
-    "sentiment_score": 0-100整数,
-    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
+    "sentiment_score": 50,
+    "trend_prediction": "下跌过程/下跌衰竭/横盘震荡/健康上涨/上涨转弱/上涨衰竭/结构风险/数据不足",
     "operation_advice": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓",
     "decision_type": "buy/hold/sell",
     "action": "buy/hold/reduce/sell/watch",
-    "guardrail_reason": "当分数区间与最终 action 不一致时填写降级/升级原因，否则留空",
+    "guardrail_reason": "当模型建议被周期阶段或重大风险约束纠正时填写原因，否则留空",
     "confidence_level": "高/中/低",
 
     "dashboard": {
@@ -2456,7 +2982,19 @@ class GeminiAnalyzer:
             "summary": "一句话综合结论",
             "reasons": ["[基本面] 实际证据", "[价格结构] 实际证据", "[量价资金] 实际证据"],
             "upgrade_trigger": "升级为更积极信号的可验证条件",
-            "downgrade_trigger": "降级或失效的可验证条件"
+            "downgrade_trigger": "降级或失效的可验证条件",
+            "cycle_phase": "复制系统 timing_state.phase",
+            "price_zone": "复制系统 timing_state.price_zone",
+            "reference_points": {"zone_label": "动作对应点位", "zone": "可靠区间或N/A", "risk_label": "失效或触发名称", "risk_line": "可靠点位或条件"}
+        },
+        "timing_state": {
+            "phase": "系统计算值，不得主观改写",
+            "price_zone": "系统计算值",
+            "volume_state": "系统计算值",
+            "momentum_state": "系统计算值",
+            "data_quality": "full/partial/insufficient",
+            "suggested_signal": "系统计算值",
+            "evidence": ["机器计算证据"]
         },
         "core_conclusion": {
             "one_sentence": "一句话核心结论（30字以内，直接告诉用户做什么）",
@@ -2563,37 +3101,16 @@ class GeminiAnalyzer:
 }
 ```
 
-## 评分标准
+## 周期阶段与信号标准
 
-### 适合抢筹（80-100分）：
-- ✅ 多个激活技能同时支持积极结论
-- ✅ 上行空间、触发条件与风险回报清晰
-- ✅ 关键风险已排查，失效条件与风控边界明确
-- ✅ 重要数据和情报结论彼此一致
+- `exit`：重大基本面/结构风险；或极高位上涨衰竭且至少两类独立弱化证据。
+- `reduce`：高位上涨转弱，至少两类证据，且至少一类不是成交量。
+- `accumulate`：下跌至极低位、极致缩量，并有衰竭/底背离/波动收敛/承接改善确认。
+- `low_buy`：仍处下跌过程、位置不高、成交量收缩、跌速未加快，并有独立安全证据；不要求先反转。
+- `watch`：横盘震荡、加速下跌、放量破位、证据冲突或数据不足。
+- `hold`：健康上涨或主要结构稳定，且不满足减仓/清仓。
 
-### 适合低吸（60-79分）：
-- ✅ 主信号偏积极，但仍有少量待确认项
-- ✅ 允许存在可控风险或次优入场点
-- ✅ 需要在报告中明确补充观察条件
-
-### 适合持有（50-59分）：
-- ✅ 长期逻辑与主要结构保持正常
-- ✅ 暂无足够的进攻或退出确认
-
-### 继续观察（40-49分）：
-- ⚠️ 信号分歧较大，或缺乏足够确认
-- ⚠️ 风险与机会大致均衡
-- ⚠️ 更适合等待触发条件或回避不确定性
-
-### 适合减仓（20-39分）：
-- ⚠️ 主要结论转弱，但长期逻辑尚未确认反转
-- ⚠️ 触发了部分失效条件，现有风险暴露需要降低
-- ⚠️ 更适合保护收益而不是进攻
-
-### 适合清仓（0-19分）：
-- ❌ 主要结论转弱，风险明显高于收益
-- ❌ 触发了止损/失效条件或重大利空
-- ❌ 长期逻辑或核心结构出现明确反转
+`sentiment_score` 只是旧接口兼容字段，固定填 50，不得用它选择信号。
 
 ## 决策仪表盘核心原则
 
@@ -2605,11 +3122,12 @@ class GeminiAnalyzer:
 
 ## 可操作性与稳定性约束
 
-- 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
-- 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
-- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
-- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
-- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须以 `timing_state.phase` 和机器前置条件作为技术阶段约束，再用方向明确的基本面、行业、新闻、资金与筹码证据确认、补足最后一个独立维度或否决。
+- 高位和上涨阶段禁止低吸/抢筹；加速下跌或放量破位禁止低吸/抢筹。
+- 上涨缩量或价格极高单一证据不能触发减仓/清仓。
+- 资金流缺失只降低置信度，不得自动把有效低吸/抢筹降级为观察。
+- 重大基本面或结构风险可以否决任何超跌买入信号。
+- 低吸/抢筹展示介入区与失效位；减仓/清仓展示压力或退出区；观察展示箱体；持有展示防守位。禁止所有状态都输出买点。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
@@ -4154,6 +4672,17 @@ class GeminiAnalyzer:
 | 总市值 | {self._format_amount(rt.get('total_mv'))} | |
 | 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
+"""
+
+        timing_state = context.get("timing_state") if isinstance(context, dict) else None
+        if isinstance(timing_state, dict):
+            prompt += f"""
+### 系统计算的反向周期状态（技术阶段权威约束）
+```json
+{json.dumps(timing_state, ensure_ascii=False, indent=2)}
+```
+
+> 你必须保留 `phase`、`price_zone` 和机器证据的语义，不得用看多评分或主观趋势分重新定义阶段。基本面重大风险可以否决买入信号；机器前置条件已满足时，方向明确的资金筹码、行业市场或基本面证据可以补足最后一个独立确认维度。
 """
 
         # 添加财报与分红（价值投资口径）

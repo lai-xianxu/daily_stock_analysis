@@ -1,0 +1,175 @@
+"""Deterministic OHLCV scenarios for the contrarian cycle timer."""
+
+from datetime import date
+from unittest.mock import patch
+
+import numpy as np
+import pandas as pd
+
+from src.services.timing_state_analyzer import analyze_timing_state
+
+
+def _ohlcv(close: np.ndarray, volume: np.ndarray, *, upper_wick: float = 0.006) -> pd.DataFrame:
+    close = np.asarray(close, dtype=float)
+    volume = np.asarray(volume, dtype=float)
+    open_price = np.r_[close[0], close[:-1]]
+    high = np.maximum(open_price, close) * (1 + upper_wick)
+    low = np.minimum(open_price, close) * 0.994
+    return pd.DataFrame(
+        {
+            "date": pd.bdate_range("2025-01-02", periods=len(close)),
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        }
+    )
+
+
+def _decline(*, recent_volume: float, accelerating: bool = False) -> pd.DataFrame:
+    head = np.linspace(132, 105, 149)
+    if accelerating:
+        tail = np.array([104, 103, 102, 101, 100, 99, 96, 92, 87, 81, 74], dtype=float)
+    else:
+        tail = np.array([104, 102, 100, 98, 96, 94, 93.5, 93, 92.5, 92.2, 92], dtype=float)
+    close = np.r_[head, tail]
+    volume = np.full(len(close), 1000.0)
+    volume[-5:] = recent_volume
+    return _ohlcv(close, volume)
+
+
+def _range_bound() -> pd.DataFrame:
+    x = np.linspace(0, 16 * np.pi, 160)
+    close = 100 + np.sin(x) * 1.2
+    volume = 900 + np.cos(x) * 60
+    return _ohlcv(close, volume)
+
+
+def _healthy_advance() -> pd.DataFrame:
+    close = np.linspace(72, 124, 160) + np.sin(np.linspace(0, 8, 160)) * 0.35
+    volume = np.full(160, 1000.0)
+    return _ohlcv(close, volume)
+
+
+def _weakening_advance(*, extreme: bool) -> pd.DataFrame:
+    if extreme:
+        head = np.linspace(70, 112, 149)
+        tail = np.array([113, 115, 117, 119, 121, 123, 124, 125, 125.6, 126.0, 126.3])
+    else:
+        head = np.r_[np.linspace(72, 122, 105), np.full(20, 134.0), np.linspace(130, 105, 24)]
+        tail = np.array([111, 113, 116, 119, 122, 123, 123.6, 124.1, 124.5, 124.8, 125.0])
+    close = np.r_[head, tail]
+    volume = np.full(len(close), 1000.0)
+    volume[-5:] = 500.0
+    return _ohlcv(close, volume)
+
+
+def test_declining_contraction_can_emit_low_buy_before_reversal() -> None:
+    state = analyze_timing_state(_decline(recent_volume=650), "TEST").to_dict()
+
+    assert state["phase"] == "declining"
+    assert state["suggested_signal"] == "low_buy"
+    assert state["volume_state"] == "contraction"
+    assert state["metrics"]["volume_contraction_streak"] > 0
+
+
+def test_extreme_low_and_extreme_contraction_with_exhaustion_emits_accumulate() -> None:
+    state = analyze_timing_state(_decline(recent_volume=350), "TEST").to_dict()
+
+    assert state["phase"] == "declining_exhaustion"
+    assert state["suggested_signal"] == "accumulate"
+    assert state["price_zone"] == "extreme_low"
+    assert state["volume_state"] == "extreme_contraction"
+    assert state["safety_evidence"]
+
+
+def test_accelerating_breakdown_cannot_emit_entry_signal() -> None:
+    state = analyze_timing_state(
+        _decline(recent_volume=1800, accelerating=True),
+        "TEST",
+    ).to_dict()
+
+    assert state["phase"] == "declining"
+    assert state["suggested_signal"] == "watch"
+    assert state["momentum_state"] == "accelerating_down"
+    assert state["metrics"]["support_distance_atr"] < 0
+
+
+def test_range_bound_market_emits_watch() -> None:
+    state = analyze_timing_state(_range_bound(), "TEST").to_dict()
+
+    assert state["phase"] == "range_bound"
+    assert state["suggested_signal"] == "watch"
+
+
+def test_healthy_advance_emits_hold_even_at_high_price() -> None:
+    state = analyze_timing_state(_healthy_advance(), "TEST").to_dict()
+
+    assert state["phase"] == "advancing"
+    assert state["suggested_signal"] == "hold"
+    assert state["price_zone"] in {"high", "extreme_high"}
+    assert state["metrics"]["rsi_12"] == 100
+
+
+def test_high_advance_with_volume_and_momentum_weakening_emits_reduce() -> None:
+    state = analyze_timing_state(_weakening_advance(extreme=False), "TEST").to_dict()
+
+    assert state["phase"] == "advancing_weakening"
+    assert state["suggested_signal"] == "reduce"
+    assert {"volume", "momentum"} <= set(state["weakening_dimensions"])
+
+
+def test_extreme_advance_with_two_weakening_dimensions_emits_exit() -> None:
+    state = analyze_timing_state(_weakening_advance(extreme=True), "TEST").to_dict()
+
+    assert state["phase"] == "advancing_exhaustion"
+    assert state["suggested_signal"] == "exit"
+    assert len(state["weakening_dimensions"]) >= 2
+
+
+def test_target_date_excludes_later_intraday_or_future_bar() -> None:
+    frame = _healthy_advance()
+    completed = frame.iloc[-2]["date"].date()
+    frame.loc[frame.index[-1], ["close", "high", "volume"]] = [10_000, 10_010, 10_000_000]
+
+    state = analyze_timing_state(frame, "TEST", target_date=completed).to_dict()
+
+    assert state["completed_bar_date"] == completed.isoformat()
+    assert state["metrics"]["bar_count"] == len(frame) - 1
+    assert state["metrics"]["current_price"] < 200
+
+
+def test_insufficient_history_is_unknown_watch() -> None:
+    frame = _healthy_advance().tail(40)
+    state = analyze_timing_state(frame, "TEST", target_date=date(2026, 12, 31)).to_dict()
+
+    assert state["phase"] == "unknown"
+    assert state["suggested_signal"] == "watch"
+    assert state["data_quality"] == "insufficient"
+
+
+def test_missing_recent_volume_is_unknown_instead_of_normal_volume() -> None:
+    frame = _healthy_advance()
+    frame.loc[frame.index[-5:], "volume"] = np.nan
+
+    state = analyze_timing_state(frame, "TEST").to_dict()
+
+    assert state["volume_state"] == "unknown"
+    assert any("成交量数据不可用" in item for item in state["limitations"])
+
+
+def test_pipeline_history_failure_falls_back_to_unknown_watch_not_legacy_score() -> None:
+    from src.core.pipeline import StockAnalysisPipeline
+
+    pipeline = object.__new__(StockAnalysisPipeline)
+    with (
+        patch("src.services.history_loader.get_frozen_target_date", return_value=date(2026, 7, 16)),
+        patch("src.services.history_loader.load_history_df", side_effect=RuntimeError("offline")),
+    ):
+        state = pipeline._load_timing_state("600519")
+
+    assert state is not None
+    assert state["phase"] == "unknown"
+    assert state["suggested_signal"] == "watch"
+    assert state["source"] == "timing_analysis_error"

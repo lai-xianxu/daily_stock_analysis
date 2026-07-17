@@ -108,6 +108,57 @@ analyze_trend_tool = ToolDefinition(
 
 
 # ============================================================
+# analyze_timing_state — deterministic contrarian cycle state
+# ============================================================
+
+def _handle_analyze_timing_state(stock_code: str) -> dict:
+    """Classify the current cycle state from completed daily OHLCV bars."""
+    from src.services.history_loader import get_frozen_target_date, load_history_df
+    from src.services.timing_state_analyzer import analyze_timing_state
+
+    if not (stock_code and str(stock_code).strip()):
+        return {"error": "stock_code is required"}
+
+    target_date = get_frozen_target_date()
+    if target_date is None:
+        from data_provider.base import normalize_stock_code
+        from src.core.trading_calendar import get_effective_trading_date, get_market_for_stock
+
+        market = get_market_for_stock(normalize_stock_code(stock_code))
+        target_date = get_effective_trading_date(market)
+    try:
+        df, source = load_history_df(stock_code, days=240, target_date=target_date)
+    except Exception:
+        logger.warning("analyze_timing_state(%s): history load failed", stock_code, exc_info=True)
+        df, source = None, "history_load_error"
+    result = analyze_timing_state(df, stock_code, target_date=target_date)
+    payload = result.to_dict()
+    payload["source"] = source
+    return payload
+
+
+analyze_timing_state_tool = ToolDefinition(
+    name="analyze_timing_state",
+    description=(
+        "Classify a stock's contrarian cycle state from up to 240 completed daily bars. "
+        "Returns decline/range/advance phases, price and volume percentiles, momentum and "
+        "volatility evidence, a constrained six-state signal candidate, and action-specific "
+        "reference points. It does not use incomplete intraday volume."
+    ),
+    parameters=[
+        ToolParameter(
+            name="stock_code",
+            type="string",
+            description="Stock code, e.g., '600519', 'hk00700', or 'AAPL'",
+        ),
+    ],
+    handler=_handle_analyze_timing_state,
+    category="analysis",
+    policy=_ANALYSIS_READ_POLICY,
+)
+
+
+# ============================================================
 # calculate_ma — flexible moving average calculator
 # ============================================================
 
@@ -525,6 +576,7 @@ analyze_pattern_tool = ToolDefinition(
 
 ALL_ANALYSIS_TOOLS = [
     analyze_trend_tool,
+    analyze_timing_state_tool,
     calculate_ma_tool,
     get_volume_analysis_tool,
     analyze_pattern_tool,

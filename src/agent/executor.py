@@ -231,7 +231,7 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - `get_daily_history` 获取历史K线
 
 **第二阶段 · 技术、价格与量能**（等第一阶段结果返回后执行）
-- `analyze_trend` 获取技术指标
+- `analyze_timing_state` 获取已完成日线计算的周期阶段、分位、动能和候选信号
 - `get_volume_analysis` 获取多周期量价特征
 
 **第三阶段 · 基本面、市场与行业**（等前两阶段完成后执行）
@@ -272,8 +272,8 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 ```json
 {{
     "stock_name": "股票中文名称",
-    "sentiment_score": 0-100整数,
-    "trend_prediction": "强烈看多/看多/震荡/看空/强烈看空",
+    "sentiment_score": 50,
+    "trend_prediction": "下跌过程/下跌衰竭/横盘震荡/健康上涨/上涨动能衰减/上涨极致/结构性风险",
     "operation_advice": "继续观察/适合低吸/适合抢筹/适合持有/适合减仓/适合清仓",
     "decision_type": "buy/hold/sell",
     "action": "buy/hold/reduce/sell/watch",
@@ -286,7 +286,21 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "summary": "一句话综合结论",
             "reasons": ["[基本面] 实际证据", "[价格结构] 实际证据", "[量价资金] 实际证据"],
             "upgrade_trigger": "升级为更积极信号的可验证条件",
-            "downgrade_trigger": "降级或失效的可验证条件"
+            "downgrade_trigger": "降级或失效的可验证条件",
+            "cycle_phase": "复制系统 timing_state.phase",
+            "price_zone": "复制系统 timing_state.price_zone",
+            "reference_points": {{"zone_label": "动作对应点位", "zone": "可靠区间或N/A", "risk_label": "失效或触发名称", "risk_line": "可靠点位或条件"}}
+        }},
+        "timing_state": {{
+            "phase": "系统计算值，不得主观改写",
+            "price_zone": "系统计算值",
+            "volume_state": "系统计算值",
+            "momentum_state": "系统计算值",
+            "data_quality": "full/partial/insufficient",
+            "suggested_signal": "系统计算值",
+            "confidence": "系统计算值",
+            "evidence": ["机器计算证据"],
+            "reference_points": {{"zone_label": "动作对应点位", "zone": "可靠区间或N/A", "risk_label": "风险线", "risk_line": "可靠点位或条件"}}
         }},
         "core_conclusion": {{
             "one_sentence": "一句话核心结论（30字以内）",
@@ -348,37 +362,13 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 }}
 ```
 
-## 评分标准
+## 阶段判定标准
 
-### 适合抢筹（80-100分）：
-- ✅ 多个激活技能同时支持积极结论
-- ✅ 上行空间、触发条件与风险回报清晰
-- ✅ 关键风险已排查，失效条件与风控边界明确
-- ✅ 重要数据和情报结论彼此一致
-
-### 适合低吸（60-79分）：
-- ✅ 主信号偏积极，但仍有少量待确认项
-- ✅ 允许存在可控风险或次优入场点
-- ✅ 需要在报告中明确补充观察条件
-
-### 适合持有（50-59分）：
-- ✅ 长期逻辑与主要结构保持正常
-- ✅ 暂无足够的进攻或退出确认
-
-### 继续观察（40-49分）：
-- ⚠️ 信号分歧较大，或缺乏足够确认
-- ⚠️ 风险与机会大致均衡
-- ⚠️ 更适合等待触发条件或回避不确定性
-
-### 适合减仓（20-39分）：
-- ⚠️ 主要结论转弱，但长期逻辑尚未确认反转
-- ⚠️ 触发了部分失效条件，现有风险暴露需要降低
-- ⚠️ 更适合保护收益而不是进攻
-
-### 适合清仓（0-19分）：
-- ❌ 主要结论转弱，风险明显高于收益
-- ❌ 触发了止损/失效条件或重大利空
-- ❌ 长期逻辑或核心结构出现明确反转
+- `declining`：满足低位、缩量、跌速未加快时，系统候选可直接采用；若只缺最后一项安全证据，可用方向明确的资金筹码、行业市场或基本面改善证据补足，不得等待金叉后才承认低吸。
+- 价格极低、量能极缩且跌速未加快时，允许用一项机器衰竭或方向明确的外部改善证据补足 `accumulate`；基本面或市场风险可降为 `low_buy/watch`。
+- `range_bound`：固定 `watch`；只展示箱体区间，不输出理想买点。
+- `advancing`：默认 `hold`；高位和上涨不得输出买入。只有机器证据与方向明确的外部转弱证据合计达到两个独立维度，且至少一个不是成交量，才可输出 `reduce`；极高位满足同样条件才可 `exit`。
+- `advancing_weakening`：输出 `reduce`；`advancing_exhaustion` 或 `structural_risk`：输出 `exit`。
 
 ## 决策仪表盘核心原则
 
@@ -392,9 +382,9 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 
 - 不得仅因为单日涨跌或评分跨线就在“买入/卖出”之间剧烈切换。
 - 操作建议必须同时参考价格位置（支撑/压力位）、量能/筹码、主力资金流向和风险事件。
-- 股价位于支撑与压力之间、资金流不明确时，优先输出“持有/震荡/观望/洗盘观察”等可执行的中性建议；`decision_type` 仍保持 `hold`。
-- 只有在接近支撑确认或有效突破压力，且资金流/量价配合时，才能给出买入；接近压力且资金流出时不得追买。
-- 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
+- 必须以 `timing_state.phase` 和机器前置条件为技术阶段约束，再用方向明确的基本面、市场、资金与筹码证据确认、补足最后一个独立维度或降级。
+- 资金流缺失只降低置信度，不得自动改变主信号。
+- 低吸/抢筹展示介入区与失效位；减仓/清仓展示压力或退出区；观察展示箱体；持有展示防守位。禁止所有状态都输出买点。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
@@ -885,6 +875,12 @@ class AgentExecutor:
             # Inject pre-fetched context data to avoid redundant fetches
             if context.get("realtime_quote"):
                 parts.append(f"\n[系统已获取的实时行情]\n{json.dumps(context['realtime_quote'], ensure_ascii=False)}")
+            if isinstance(context.get("timing_state"), dict):
+                parts.append(
+                    "\n[系统计算的反向周期状态，作为技术阶段权威约束]\n"
+                    + json.dumps(context["timing_state"], ensure_ascii=False)
+                    + "\n保留 phase/price_zone 语义；基本面重大风险可否决买入。机器前置条件已满足时，方向明确的资金筹码、行业市场或基本面证据可补足最后一个独立确认维度。"
+                )
             if context.get("chip_distribution"):
                 parts.append(f"\n[系统已获取的筹码分布]\n{json.dumps(context['chip_distribution'], ensure_ascii=False)}")
             if context.get("news_context"):

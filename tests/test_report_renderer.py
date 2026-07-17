@@ -88,6 +88,42 @@ def _make_strategy_result() -> AnalysisResult:
                 ],
                 "upgrade_trigger": "形成更高低点并收复短期均线",
                 "downgrade_trigger": "有效跌破支撑且基本面风险上升",
+                "cycle_phase": "declining",
+                "price_zone": "low",
+                "reference_points": {
+                    "zone_label": "低吸观察区",
+                    "zone": "98.00-100.00",
+                    "risk_label": "结构失效参考",
+                    "risk_line": "96.00",
+                },
+            },
+            "timing_state": {
+                "phase": "declining",
+                "price_zone": "low",
+                "volume_state": "contraction",
+                "momentum_state": "decelerating_down",
+                "data_quality": "full",
+                "suggested_signal": "low_buy",
+                "confidence": "中",
+                "summary": "下跌过程中抛压收敛",
+                "evidence": [
+                    "[价格位置] 120日价格分位18.0%，区间=low",
+                    "[量能] 5日均量分位20.0%，5/20量比0.72，状态=contraction",
+                    "[动能] 最近5日跌速较前5日放缓",
+                ],
+                "metrics": {
+                    "current_price": 100,
+                    "price_percentile_120": 18,
+                    "volume_percentile_120": 20,
+                    "volume_ratio_5_20": 0.72,
+                },
+                "reference_points": {
+                    "zone_label": "低吸观察区",
+                    "zone": "98.00-100.00",
+                    "risk_label": "结构失效参考",
+                    "risk_line": "96.00",
+                },
+                "limitations": [],
             },
             "core_conclusion": {
                 "one_sentence": "旧核心结论仍保留",
@@ -198,7 +234,10 @@ class TestReportRenderer(unittest.TestCase):
             with self.subTest(platform=platform):
                 out = render(platform, [result], summary_only=False)
                 self.assertIsNotNone(out)
-                self.assertIn("综合策略判断", out)
+                if platform == "wechat":
+                    self.assertIn("**周期**", out)
+                else:
+                    self.assertIn("综合策略判断", out)
                 self.assertIn("适合低吸", out)
                 self.assertIn("置信度", out)
                 self.assertIn("盈利与现金流未见明显恶化", out)
@@ -222,6 +261,10 @@ class TestReportRenderer(unittest.TestCase):
         self.assertIn("适合低吸:1", out)
         self.assertIn("盈利与现金流未见明显恶化", out)
         self.assertIn("行业需求仍需跟踪", out)
+        self.assertIn("下跌过程", out)
+        self.assertIn("低吸观察区", out)
+        self.assertNotIn("评分", out)
+        self.assertNotIn("理想买入点", out)
         self.assertNotIn("🟢买入:1", out)
         for personalized_text in (
             "空仓者等待回踩",
@@ -231,9 +274,9 @@ class TestReportRenderer(unittest.TestCase):
         ):
             self.assertNotIn(personalized_text, out)
 
-    def test_strategy_wechat_stays_compact_for_thirteen_stocks(self) -> None:
+    def test_strategy_wechat_stays_compact_for_ten_stocks(self) -> None:
         results = []
-        for index in range(13):
+        for index in range(10):
             result = deepcopy(_make_strategy_result())
             result.code = f"{300000 + index:06d}"
             result.name = f"示例{index + 1}"
@@ -242,10 +285,78 @@ class TestReportRenderer(unittest.TestCase):
         out = render("wechat", results, summary_only=False)
 
         self.assertIsNotNone(out)
-        self.assertLess(len(out), 10000)
-        self.assertEqual(out.count("综合策略判断"), 13)
+        self.assertLess(len(out), 5500)
+        self.assertEqual(out.count("**周期**"), 10)
         for personalized_text in ("空仓者", "持仓者", "三成仓位", "首次买入两成"):
             self.assertNotIn(personalized_text, out)
+
+    def test_strategy_wechat_sorts_risk_first_and_uses_action_specific_points(self) -> None:
+        low_buy = deepcopy(_make_strategy_result())
+        low_buy.name = "低吸样例"
+        low_buy.code = "LOW"
+
+        reduce = deepcopy(_make_strategy_result())
+        reduce.name = "减仓样例"
+        reduce.code = "REDUCE"
+        reduce.dashboard["strategy_signal"].update(
+            {
+                "signal_code": "reduce",
+                "signal_label": "适合减仓",
+                "cycle_phase": "advancing_weakening",
+                "price_zone": "high",
+                "reference_points": {
+                    "zone_label": "减仓压力区",
+                    "zone": "118.00-122.00",
+                    "risk_label": "重新转强参考",
+                    "risk_line": "123.00",
+                },
+            }
+        )
+        reduce.dashboard["timing_state"].update(
+            {
+                "phase": "advancing_weakening",
+                "price_zone": "high",
+                "volume_state": "contraction",
+                "momentum_state": "weakening_up",
+                "suggested_signal": "reduce",
+                "reference_points": reduce.dashboard["strategy_signal"]["reference_points"],
+            }
+        )
+
+        exit_result = deepcopy(reduce)
+        exit_result.name = "清仓样例"
+        exit_result.code = "EXIT"
+        exit_result.dashboard["strategy_signal"].update(
+            {
+                "signal_code": "exit",
+                "signal_label": "适合清仓",
+                "cycle_phase": "advancing_exhaustion",
+                "reference_points": {
+                    "zone_label": "清仓触发区",
+                    "zone": "128.00-130.00",
+                    "risk_label": "重新转强参考",
+                    "risk_line": "131.00",
+                },
+            }
+        )
+        exit_result.dashboard["timing_state"].update(
+            {
+                "phase": "advancing_exhaustion",
+                "price_zone": "extreme_high",
+                "momentum_state": "exhausted_up",
+                "suggested_signal": "exit",
+                "reference_points": exit_result.dashboard["strategy_signal"]["reference_points"],
+            }
+        )
+
+        out = render("wechat", [low_buy, reduce, exit_result], summary_only=False)
+
+        self.assertIsNotNone(out)
+        self.assertLess(out.index("清仓样例"), out.index("减仓样例"))
+        self.assertLess(out.index("减仓样例"), out.index("低吸样例"))
+        self.assertIn("清仓触发区", out)
+        self.assertIn("减仓压力区", out)
+        self.assertNotIn("理想买入点", out)
 
     def test_report_without_strategy_signal_keeps_legacy_layout(self) -> None:
         out = render("markdown", [_make_result()], summary_only=False)

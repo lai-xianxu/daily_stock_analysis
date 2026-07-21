@@ -2,7 +2,14 @@ name: 每日股票分析
 
 on:
   schedule:
-    - cron: '30 7 * * 1-5'     # 周一到周五，UTC 07:30 = 北京时间 15:30
+    # 15:30 主触发；15:41/15:52 为 GitHub 调度延迟或丢任务时的错峰备援。
+    # 同一北京时间自然日只保留首个成功执行，避免重复推送。
+    - cron: '30 15 * * 1-5'
+      timezone: 'Asia/Shanghai'
+    - cron: '41 15 * * 1-5'
+      timezone: 'Asia/Shanghai'
+    - cron: '52 15 * * 1-5'
+      timezone: 'Asia/Shanghai'
   
   # 手动触发
   workflow_dispatch:
@@ -26,8 +33,53 @@ concurrency:
   group: stock-analysis
   cancel-in-progress: false
 
+permissions:
+  actions: read
+  contents: read
+
 jobs:
+  schedule-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      should_run: ${{ steps.guard.outputs.should_run }}
+    steps:
+      - name: 检查今日是否已有成功定时分析
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CN_DATE="$(TZ='Asia/Shanghai' date '+%Y-%m-%d')"
+          if ! RUNS_JSON="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/00-daily-analysis.yml/runs?event=schedule&per_page=30")"; then
+            echo "⚠️ 无法读取历史定时任务，按不漏推原则继续执行"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PRIOR_SUCCESS="$(jq -r \
+            --arg date "$CN_DATE" \
+            --argjson current "$GITHUB_RUN_ID" \
+            '.workflow_runs[]
+             | select(.id != $current and .conclusion == "success")
+             | select(((.created_at | fromdateiso8601) + 28800 | strftime("%Y-%m-%d")) == $date)
+             | .id' <<< "$RUNS_JSON" | head -n 1)"
+          if [ -n "$PRIOR_SUCCESS" ]; then
+            echo "⏭️ 今日已有成功定时分析 run=$PRIOR_SUCCESS，本次备援触发跳过"
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "✅ 今日尚无成功定时分析，本次继续执行"
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   analyze:
+    needs: schedule-guard
+    if: needs.schedule-guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
     # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。

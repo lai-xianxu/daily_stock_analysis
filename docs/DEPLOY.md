@@ -475,8 +475,15 @@ git push
 
 ```yaml
 schedule:
-  - cron: '30 7 * * 1-5'  # UTC 时间，+8 = 北京时间
+  - cron: '30 15 * * 1-5'
+    timezone: 'Asia/Shanghai'
+  - cron: '41 15 * * 1-5'  # 错峰备援
+    timezone: 'Asia/Shanghai'
+  - cron: '52 15 * * 1-5'  # 错峰备援
+    timezone: 'Asia/Shanghai'
 ```
+
+15:30 是主触发。15:41、15:52 用于 GitHub 调度延迟或丢任务时接手；工作流会查询 Actions 历史，同一北京时间自然日已有成功定时分析时自动跳过备援，因此不会重复推送。若自行修改时间，请同步修改三条 cron，并保留错峰间隔。
 
 常用 cron 示例：
 | 表达式 | 说明 |
@@ -500,7 +507,7 @@ git push
 ### 常见问题
 
 **Q: 为什么定时任务没有执行？**
-A: GitHub Actions 定时任务可能因平台排队而延迟，极端高负载时队列任务也可能被丢弃；公开仓库连续 60 天无活动时，定时 workflow 会被自动禁用。请在 Actions 页面检查运行记录和 workflow 启用状态。
+A: GitHub Actions 的 cron 是尽力调度，并不保证准点；平台高负载时可能延迟甚至丢弃任务。默认工作流因此设置了两个错峰备援并按北京时间日期去重。公开仓库连续 60 天无活动时，定时 workflow 仍会被自动禁用，请在 Actions 页面检查运行记录和 workflow 启用状态。
 
 **Q: 如何查看历史报告？**
 A: Actions → 选择运行记录 → Artifacts → 下载 `analysis-reports-xxx`

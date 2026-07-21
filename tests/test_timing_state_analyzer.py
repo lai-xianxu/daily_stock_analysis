@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from data_provider.realtime_types import RealtimeSource, UnifiedRealtimeQuote
-from src.services.timing_state_analyzer import analyze_timing_state
+from src.services.timing_state_analyzer import TimingStateAnalyzer, analyze_timing_state
 
 
 def _ohlcv(close: np.ndarray, volume: np.ndarray, *, upper_wick: float = 0.006) -> pd.DataFrame:
@@ -73,6 +73,15 @@ def _weakening_advance(*, extreme: bool) -> pd.DataFrame:
     close = np.r_[head, tail]
     volume = np.full(len(close), 1000.0)
     volume[-5:] = 500.0
+    return _ohlcv(close, volume)
+
+
+def _high_level_breakdown() -> pd.DataFrame:
+    head = np.linspace(70, 112, 149)
+    tail = np.array([114, 117, 121, 126, 132, 138, 136, 131, 124, 116, 108], dtype=float)
+    close = np.r_[head, tail]
+    volume = np.full(len(close), 1000.0)
+    volume[-5:] = 1900.0
     return _ohlcv(close, volume)
 
 
@@ -146,6 +155,126 @@ def test_extreme_advance_with_two_weakening_dimensions_emits_exit() -> None:
     assert state["phase"] == "advancing_exhaustion"
     assert state["suggested_signal"] == "exit"
     assert len(state["weakening_dimensions"]) >= 2
+
+
+def test_soft_low_position_can_emit_low_buy_with_extra_confirmation() -> None:
+    analyzer = TimingStateAnalyzer()
+    metrics = {
+        "price_percentile_120": 36.0,
+        "price_percentile_240": 42.0,
+        "drawdown_60": -0.25,
+        "return_60": -0.20,
+        "current_price": 90.0,
+        "ma20": 95.0,
+        "ma60": 100.0,
+        "return_5": -0.01,
+        "prior_return_5": -0.03,
+        "return_20": -0.08,
+        "ma20_slope_atr": -0.5,
+        "efficiency_ratio_20": 0.5,
+        "bb_width_percentile_120": 60.0,
+        "ma_spread_atr": 2.0,
+        "support_distance_atr": 0.5,
+    }
+    metrics.update(analyzer._position_profile(metrics))
+
+    phase, _, signal = analyzer._classify(
+        metrics=metrics,
+        price_zone="mid",
+        volume_state="contraction",
+        safety_evidence=["[动能] 跌速放缓", "[结构] 接近支撑"],
+        weakening_dimensions=[],
+    )
+
+    assert metrics["entry_position_strength"] == "soft"
+    assert phase == "declining"
+    assert signal == "low_buy"
+
+
+def test_soft_high_position_can_reduce_with_three_dimensions() -> None:
+    analyzer = TimingStateAnalyzer()
+    metrics = {
+        "price_percentile_120": 62.0,
+        "price_percentile_240": 68.0,
+        "drawdown_60": -0.08,
+        "return_60": 0.25,
+        "current_price": 110.0,
+        "ma20": 105.0,
+        "ma60": 98.0,
+        "return_5": 0.01,
+        "prior_return_5": 0.04,
+        "return_20": 0.05,
+        "ma20_slope_atr": 0.5,
+        "efficiency_ratio_20": 0.5,
+        "bb_width_percentile_120": 60.0,
+        "ma_spread_atr": 2.0,
+    }
+    metrics.update(analyzer._position_profile(metrics))
+
+    phase, _, signal = analyzer._classify(
+        metrics=metrics,
+        price_zone="mid",
+        volume_state="contraction",
+        safety_evidence=[],
+        weakening_dimensions=["volume", "momentum", "industry_market"],
+    )
+
+    assert metrics["exit_position_strength"] == "soft"
+    assert phase == "advancing_weakening"
+    assert signal == "reduce"
+
+
+def test_high_level_breakdown_is_not_misclassified_as_low_entry_decline() -> None:
+    state = analyze_timing_state(_high_level_breakdown(), "TEST").to_dict()
+
+    assert state["phase"] == "high_level_breakdown"
+    assert state["suggested_signal"] in {"reduce", "exit"}
+    assert len(state["weakening_dimensions"]) >= 3
+
+
+def test_high_position_accelerating_breakdown_can_exit_below_90th_percentile() -> None:
+    analyzer = TimingStateAnalyzer()
+    metrics = {
+        "price_percentile_120": 78.75,
+        "price_percentile_240": 88.96,
+        "drawdown_60": -0.2068,
+        "return_60": 0.2957,
+        "current_price": 139.88,
+        "ma20": 152.0285,
+        "ma60": 135.076,
+        "return_5": -0.1419,
+        "prior_return_5": 0.1619,
+        "return_20": -0.0058,
+        "ma20_slope_atr": 0.446,
+        "efficiency_ratio_20": 0.0466,
+        "bb_width_percentile_120": 55.42,
+        "ma_spread_atr": 1.388,
+        "support_distance_atr": 0.5731,
+        "macd_bar_slope_5": -5.6719,
+        "negative_divergence": False,
+        "rsi_12": 43.3745,
+        "rsi_slope_5": -17.7153,
+        "atr_percentile_120": 99.58,
+        "atr_change_5": 1.0965,
+        "upper_wick_ratio": 0.3335,
+    }
+    metrics.update(analyzer._position_profile(metrics))
+    weakening = analyzer._advance_weakening_evidence(metrics, "expansion")
+    dimensions = list(dict.fromkeys(item[0] for item in weakening))
+
+    phase, momentum, signal = analyzer._classify(
+        metrics=metrics,
+        price_zone="high",
+        volume_state="expansion",
+        safety_evidence=["[结构] 接近20日支撑"],
+        weakening_dimensions=dimensions,
+    )
+
+    assert metrics["blended_price_percentile"] < 90
+    assert set(dimensions) == {"momentum", "structure", "volume", "volatility"}
+    assert phase == "high_level_breakdown"
+    assert momentum == "breakdown_from_high"
+    assert signal == "exit"
 
 
 def test_target_date_excludes_later_intraday_or_future_bar() -> None:

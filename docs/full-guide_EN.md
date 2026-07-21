@@ -631,8 +631,12 @@ Edit `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  # UTC time, Beijing time = UTC + 8
-  - cron: '30 7 * * 1-5'   # Monday to Friday 15:30 (Beijing Time)
+  - cron: '30 15 * * 1-5'
+    timezone: 'Asia/Shanghai'
+  - cron: '41 15 * * 1-5'
+    timezone: 'Asia/Shanghai'
+  - cron: '52 15 * * 1-5'
+    timezone: 'Asia/Shanghai'
 ```
 
 Common time reference:
@@ -646,7 +650,7 @@ Common time reference:
 | 18:00 | `'0 10 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
-The daily workflow now triggers at 15:30 Beijing time without an extra random delay and allows 90 minutes by default. GitHub-hosted schedules can still start later because of queue load; the analysis fetches the latest closing quote when it actually starts, and notification time depends on the stock count, providers, and model latency. The `full` manual mode always includes both stock analysis and market review; use `market-only` when only the market review is needed.
+The daily workflow uses 15:30 Beijing time as its primary trigger, with staggered fallbacks at 15:41 and 15:52, no random startup delay, and a 90-minute default timeout. Before analysis, each scheduled run checks whether the same Beijing calendar date already has a successful scheduled run; later fallbacks then skip to prevent duplicate notifications. GitHub-hosted cron remains best-effort, and notification time also depends on stock count, providers, and model latency. The `full` manual mode always includes both stock analysis and market review; use `market-only` when only the market review is needed.
 
 ### Local Scheduled Tasks
 

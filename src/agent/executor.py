@@ -364,11 +364,12 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 
 ## 阶段判定标准
 
-- `declining`：满足低位、缩量、跌速未加快时，系统候选可直接采用；若只缺最后一项安全证据，可用方向明确的资金筹码、行业市场或基本面改善证据补足，不得等待金叉后才承认低吸。
+- `declining`：综合位置偏低、缩量、跌速未加快时，系统候选可直接采用；30%-45%偏低软区需要比强低位多一项独立确认，不得等待金叉后才承认低吸。
 - 价格极低、量能极缩且跌速未加快时，允许用一项机器衰竭或方向明确的外部改善证据补足 `accumulate`；基本面或市场风险可降为 `low_buy/watch`。
 - `range_bound`：固定 `watch`；只展示箱体区间，不输出理想买点。
-- `advancing`：默认 `hold`；高位和上涨不得输出买入。只有机器证据与方向明确的外部转弱证据合计达到两个独立维度，且至少一个不是成交量，才可输出 `reduce`；极高位满足同样条件才可 `exit`。
-- `advancing_weakening`：输出 `reduce`；`advancing_exhaustion` 或 `structural_risk`：输出 `exit`。
+- `advancing`：默认 `hold`；高位和上涨不得输出买入。强高位至少两个独立转弱维度才可 `reduce`，55%-70%偏高软区至少三个维度；极高位满足双重衰竭才可 `exit`。
+- `advancing_weakening`：输出 `reduce`；`advancing_exhaustion` 输出 `exit`；`high_level_breakdown` 按机器严重程度输出 `reduce/exit`；只有已确认的 `structural_risk` 才直接 `exit`。
+- 上涨缩量或价格极高都只是单一证据，不能单独触发减仓或清仓。
 
 ## 决策仪表盘核心原则
 

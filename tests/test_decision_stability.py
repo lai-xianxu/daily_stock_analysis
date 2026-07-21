@@ -512,6 +512,55 @@ def test_negated_material_risk_text_does_not_force_exit() -> None:
     assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
 
 
+def test_unconfirmed_delisting_alert_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.dashboard["intelligence"] = {
+        "risk_alerts": [
+            "未发现近3日明确监管处罚、减持或退市风险公告；该信息需正式公告核验。"
+        ]
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_conditional_material_risk_warning_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.risk_warning = "若跌破支撑或出现重大利空，需防范继续下行。"
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_confirmed_risk_after_negated_clause_still_forces_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.risk_warning = "未发现财务造假，监管立案已确认。"
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "exit"
+
+
 def test_downgraded_exhaustion_watch_replaces_accumulation_points() -> None:
     result = _result(
         decision_type="hold",

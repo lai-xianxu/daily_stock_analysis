@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 > For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
+
+- [修复] 每日 Actions 增加15:41和15:52错峰备援及北京时间按日去重，降低GitHub cron延迟或丢任务造成的晚推、漏推风险
+- [修复] 条件、否定和待核验风险文本不再误触发结构性风险清仓
+- [改进] 反向周期策略改用120/240日综合位置软约束，并识别高位破位，避免30%/70%单点阈值机械决定动作
 - [改进] 默认个股策略改为基于已完成日线的反向周期择时，增加确定性阶段约束、动作化点位和风险优先飞书输出，分数不再决定信号。
 - [修复] 每日 GitHub Actions 改为北京时间 15:30 触发，移除随机延迟、将默认超时放宽到 90 分钟，并确保个股模式继续生成大盘复盘。
 - [修复] 盘后日线源尚未更新时，经行情日期、昨收口径和 OHLCV 完整性校验后使用实时收盘数据补齐周期状态，避免报告混用昨日技术日线与当日行情。

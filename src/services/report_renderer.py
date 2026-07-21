@@ -133,6 +133,7 @@ def _timing_label(kind: str, value: Any, language: str) -> str:
             "advancing": ("健康上涨", "Healthy advance", "건전한 상승"),
             "advancing_weakening": ("上涨动能衰减", "Advance weakening", "상승 동력 약화"),
             "advancing_exhaustion": ("上涨极致", "Advance exhaustion", "상승 소진"),
+            "high_level_breakdown": ("高位破位", "High-level breakdown", "고점 이탈"),
             "structural_risk": ("结构性风险", "Structural risk", "구조적 위험"),
             "unknown": ("数据不足", "Insufficient data", "데이터 부족"),
         },

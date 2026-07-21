@@ -1250,27 +1250,63 @@ def _has_material_timing_risk_alert(result: "AnalysisResult") -> bool:
         "default risk",
         "fundamental reversal",
     )
-    negated_phrases = (
-        "未发现重大风险",
-        "未见重大风险",
-        "暂无重大风险",
-        "无重大风险",
-        "未发现重大利空",
-        "未见重大利空",
-        "暂无重大利空",
-        "无重大利空",
+    for value in texts:
+        for clause in _confirmed_risk_clauses(value):
+            if any(phrase in clause for phrase in hard_phrases):
+                return True
+    return False
+
+
+def _confirmed_risk_clauses(value: Any) -> List[str]:
+    """Return asserted risk clauses, excluding hypothetical or negated wording."""
+
+    text = str(value or "").strip().lower()
+    if not text:
+        return []
+    uncertain_markers = (
+        "未发现",
+        "未见",
+        "未确认",
+        "尚未",
+        "尚无",
+        "暂无",
+        "没有发现",
+        "不存在",
+        "并无",
+        "无明确",
+        "无重大",
+        "无退市",
+        "无处罚",
+        "无监管",
+        "不构成",
+        "否认",
+        "需核验",
+        "有待核验",
+        "需关注",
+        "若",
+        "如果",
+        "一旦",
+        "如出现",
+        "或出现",
+        "可能",
+        "防范",
+        "警惕",
         "no material risk",
         "no material adverse",
+        "no delisting",
+        "no fraud",
+        "not confirmed",
+        "without confirmed",
+        "if ",
+        "may ",
+        "might ",
     )
-    for value in texts:
-        normalized = value.lower().strip()
-        if not normalized:
-            continue
-        for negated in negated_phrases:
-            normalized = normalized.replace(negated, "")
-        if any(phrase in normalized for phrase in hard_phrases):
-            return True
-    return False
+    clauses = re.split(r"[。；;！!，,\n]+", text)
+    return [
+        clause.strip()
+        for clause in clauses
+        if clause.strip() and not any(marker in clause for marker in uncertain_markers)
+    ]
 
 
 def _is_significant_structural_risk(value: Any) -> bool:
@@ -1278,11 +1314,12 @@ def _is_significant_structural_risk(value: Any) -> bool:
     if not _is_meaningful_text(text):
         return False
 
-    normalized = text.lower()
-    if any(keyword in normalized for keyword in _STRUCTURAL_RISK_PHRASE_HINTS):
-        return True
-
-    return "重大" in text and "风险" in normalized
+    for clause in _confirmed_risk_clauses(text):
+        if any(keyword in clause for keyword in _STRUCTURAL_RISK_PHRASE_HINTS):
+            return True
+        if "重大" in clause and "风险" in clause:
+            return True
+    return False
 
 
 def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
@@ -2227,6 +2264,7 @@ def _localized_cycle_phase(phase: str, language: str) -> str:
             "advancing": "健康上涨",
             "advancing_weakening": "上涨动能衰减",
             "advancing_exhaustion": "上涨极致",
+            "high_level_breakdown": "高位破位",
             "structural_risk": "结构性风险",
             "unknown": "阶段未知",
         },
@@ -2237,6 +2275,7 @@ def _localized_cycle_phase(phase: str, language: str) -> str:
             "advancing": "Healthy advance",
             "advancing_weakening": "Weakening advance",
             "advancing_exhaustion": "Advance exhaustion",
+            "high_level_breakdown": "High-level breakdown",
             "structural_risk": "Structural risk",
             "unknown": "Unknown phase",
         },
@@ -2247,6 +2286,7 @@ def _localized_cycle_phase(phase: str, language: str) -> str:
             "advancing": "건전한 상승",
             "advancing_weakening": "상승 동력 약화",
             "advancing_exhaustion": "상승 소진",
+            "high_level_breakdown": "고점 이탈",
             "structural_risk": "구조적 위험",
             "unknown": "단계 불명",
         },
@@ -2261,11 +2301,14 @@ def _timing_allowed_signals(timing_state: Dict[str, Any]) -> set[str]:
         return {"watch", "low_buy", "accumulate"}
     if phase == "declining":
         return {"watch", "low_buy"} if suggested == "low_buy" else {"watch"}
+    if phase == "high_level_breakdown":
+        return {suggested} if suggested in {"reduce", "exit"} else {"reduce"}
     fixed = {
         "range_bound": "watch",
         "advancing": "hold",
         "advancing_weakening": "reduce",
         "advancing_exhaustion": "exit",
+        "high_level_breakdown": "reduce",
         "structural_risk": "exit",
         "unknown": "watch",
     }
@@ -2279,6 +2322,8 @@ def _timing_default_signal(timing_state: Dict[str, Any]) -> str:
         return suggested if suggested in {"watch", "low_buy", "accumulate"} else "watch"
     if phase == "declining":
         return "low_buy" if suggested == "low_buy" else "watch"
+    if phase == "high_level_breakdown":
+        return suggested if suggested in {"reduce", "exit"} else "reduce"
     return {
         "range_bound": "watch",
         "advancing": "hold",
@@ -2419,6 +2464,17 @@ def _timing_model_confirmed_signal(
     momentum_state = str(timing_state.get("momentum_state") or "neutral")
     metrics = timing_state.get("metrics")
     metrics = metrics if isinstance(metrics, dict) else {}
+    entry_position = str(metrics.get("entry_position_strength") or "")
+    if not entry_position:
+        entry_position = "strong" if price_zone in {"extreme_low", "low"} else "none"
+    exit_position = str(metrics.get("exit_position_strength") or "")
+    if not exit_position:
+        if price_zone == "extreme_high":
+            exit_position = "extreme"
+        elif price_zone == "high":
+            exit_position = "strong"
+        else:
+            exit_position = "none"
 
     if phase == "declining" and original_code in {"low_buy", "accumulate"}:
         external = _timing_external_confirmation_dimensions(strategy, intent="safety")
@@ -2431,18 +2487,16 @@ def _timing_model_confirmed_signal(
         ):
             return "accumulate", "declining_exhaustion", external
 
-        price_percentile = _coerce_numeric_value(metrics.get("price_percentile_120"))
         if (
             original_code == "low_buy"
-            and price_zone in {"extreme_low", "low", "mid"}
-            and price_percentile is not None
-            and price_percentile <= 40
+            and entry_position in {"strong", "soft"}
             and volume_state in {"contraction", "extreme_contraction"}
+            and (entry_position == "strong" or len(external) >= 2)
         ):
             return "low_buy", "declining", external
 
     if phase == "advancing" and original_code in {"reduce", "exit"}:
-        if price_zone not in {"high", "extreme_high"}:
+        if exit_position == "none":
             return None
         machine_raw = timing_state.get("weakening_dimensions")
         machine_dimensions = {
@@ -2452,9 +2506,13 @@ def _timing_model_confirmed_signal(
         } if isinstance(machine_raw, (list, tuple, set)) else set()
         external = _timing_external_confirmation_dimensions(strategy, intent="weakening")
         combined = machine_dimensions | external
-        if len(combined) < 2 or not (combined - {"volume"}):
+        required = 3 if exit_position == "soft" else 2
+        if len(combined) < required or not (combined - {"volume"}):
             return None
-        if original_code == "exit" and price_zone == "extreme_high":
+        if original_code == "exit" and (
+            exit_position == "extreme"
+            or (exit_position == "strong" and len(combined) >= 3)
+        ):
             return "exit", "advancing_exhaustion", external
         return "reduce", "advancing_weakening", external
 
@@ -3103,10 +3161,10 @@ class GeminiAnalyzer:
 
 ## 周期阶段与信号标准
 
-- `exit`：重大基本面/结构风险；或极高位上涨衰竭且至少两类独立弱化证据。
-- `reduce`：高位上涨转弱，至少两类证据，且至少一类不是成交量。
+- `exit`：已确认的重大基本面/结构风险；或极高位双重衰竭；或长期相对高位出现至少三类独立破位证据。
+- `reduce`：综合位置偏高且上涨转弱，强高位至少两类证据，55%-70%偏高软区至少三类证据，且至少一类不是成交量。
 - `accumulate`：下跌至极低位、极致缩量，并有衰竭/底背离/波动收敛/承接改善确认。
-- `low_buy`：仍处下跌过程、位置不高、成交量收缩、跌速未加快，并有独立安全证据；不要求先反转。
+- `low_buy`：仍处下跌过程、综合位置偏低、成交量收缩、跌速未加快；30%-45%偏低软区需要额外独立确认，不要求先反转。
 - `watch`：横盘震荡、加速下跌、放量破位、证据冲突或数据不足。
 - `hold`：健康上涨或主要结构稳定，且不满足减仓/清仓。
 
@@ -3126,7 +3184,7 @@ class GeminiAnalyzer:
 - 高位和上涨阶段禁止低吸/抢筹；加速下跌或放量破位禁止低吸/抢筹。
 - 上涨缩量或价格极高单一证据不能触发减仓/清仓。
 - 资金流缺失只降低置信度，不得自动把有效低吸/抢筹降级为观察。
-- 重大基本面或结构风险可以否决任何超跌买入信号。
+- 只有已确认的重大基本面或结构风险可以否决超跌买入；条件、可能、否定或待核验文字不得触发硬风险。
 - 低吸/抢筹展示介入区与失效位；减仓/清仓展示压力或退出区；观察展示箱体；持有展示防守位。禁止所有状态都输出买点。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。

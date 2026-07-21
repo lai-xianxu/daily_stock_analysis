@@ -127,6 +127,7 @@ class TimingStateAnalyzer:
 
         data_quality = "full" if bar_count >= FULL_DATA_BARS else "partial"
         metrics = self._calculate_metrics(prepared)
+        metrics.update(self._position_profile(metrics))
         price_zone = self._price_zone(metrics.get("price_percentile_120"))
         volume_state = self._volume_state(metrics)
 
@@ -398,6 +399,78 @@ class TimingStateAnalyzer:
         return "extreme_high"
 
     @staticmethod
+    def _position_profile(metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Combine multiple horizons so the 120-day percentile is not a hard gate."""
+
+        available = [
+            (metrics.get("price_percentile_120"), 0.6),
+            (metrics.get("price_percentile_240"), 0.4),
+        ]
+        weighted = [
+            (float(value), weight)
+            for value, weight in available
+            if value is not None and np.isfinite(value)
+        ]
+        if not weighted:
+            return {
+                "blended_price_percentile": None,
+                "entry_position_strength": "none",
+                "exit_position_strength": "none",
+            }
+
+        total_weight = sum(weight for _, weight in weighted)
+        blended = sum(value * weight for value, weight in weighted) / total_weight
+        p120 = metrics.get("price_percentile_120")
+        p240 = metrics.get("price_percentile_240")
+        drawdown_60 = metrics.get("drawdown_60")
+        return_60 = metrics.get("return_60")
+        current = metrics.get("current_price")
+        ma60 = metrics.get("ma60")
+
+        low_horizon_confirmation = any(
+            value is not None and value <= 25 for value in (p120, p240)
+        )
+        high_horizon_confirmation = any(
+            value is not None and value >= 75 for value in (p120, p240)
+        )
+
+        if blended <= 30:
+            entry_strength = "strong"
+        elif (
+            blended <= 45
+            and (
+                low_horizon_confirmation
+                or (drawdown_60 is not None and drawdown_60 <= -0.15)
+            )
+        ):
+            entry_strength = "soft"
+        else:
+            entry_strength = "none"
+
+        long_term_elevated = bool(
+            (return_60 is not None and return_60 > 0)
+            or (
+                current is not None
+                and ma60 is not None
+                and current >= ma60
+            )
+        )
+        if blended >= 90:
+            exit_strength = "extreme"
+        elif blended >= 70 or (blended >= 60 and high_horizon_confirmation):
+            exit_strength = "strong"
+        elif blended >= 55 and long_term_elevated:
+            exit_strength = "soft"
+        else:
+            exit_strength = "none"
+
+        return {
+            "blended_price_percentile": round(blended, 2),
+            "entry_position_strength": entry_strength,
+            "exit_position_strength": exit_strength,
+        }
+
+    @staticmethod
     def _volume_state(metrics: Dict[str, Any]) -> str:
         percentile = metrics.get("volume_percentile_120")
         ratio = metrics.get("volume_ratio_5_20")
@@ -462,6 +535,20 @@ class TimingStateAnalyzer:
         if momentum_weak:
             evidence.append(("momentum", "[动能] ROC、RSI或MACD显示上涨动能衰减"))
 
+        current = metrics.get("current_price")
+        ma20 = metrics.get("ma20")
+        if (
+            return_5 is not None
+            and return_5 <= -0.05
+            and current is not None
+            and ma20 is not None
+            and current < ma20
+        ):
+            evidence.append(("structure", "[结构] 价格跌破MA20且短期跌幅较大，高位结构已受损"))
+
+        if return_5 is not None and return_5 < 0 and volume_state in {"expansion", "climax"}:
+            evidence.append(("volume", "[量价] 回落阶段成交量扩张，存在派发或踩踏风险"))
+
         atr_percentile = metrics.get("atr_percentile_120")
         atr_change = metrics.get("atr_change_5")
         upper_wick = metrics.get("upper_wick_ratio", 0)
@@ -473,6 +560,15 @@ class TimingStateAnalyzer:
             and upper_wick >= 0.35
         ):
             evidence.append(("volatility", "[波动] 高波动伴随明显上影，冲高承接减弱"))
+        elif (
+            return_5 is not None
+            and return_5 <= -0.05
+            and atr_percentile is not None
+            and atr_percentile >= 85
+            and atr_change is not None
+            and atr_change >= 1.0
+        ):
+            evidence.append(("volatility", "[波动] 回落时ATR处于高分位，波动风险快速上升"))
         return evidence
 
     @staticmethod
@@ -512,6 +608,27 @@ class TimingStateAnalyzer:
         )
         direction_is_weak = abs(return_20) < 0.08 and abs(ma20_slope) < 1.0
         accelerating_down = self._is_decline_accelerating(metrics, volume_state)
+        entry_position = str(metrics.get("entry_position_strength") or "none")
+        exit_position = str(metrics.get("exit_position_strength") or "none")
+        safety_dimensions = {
+            item.split("]", 1)[0].lstrip("[")
+            for item in safety_evidence
+            if item.startswith("[") and "]" in item
+        }
+        weakening_count = len(set(weakening_dimensions))
+
+        # A stock can already be falling while still sitting high in its longer
+        # cycle. Treat that as a high-level breakdown instead of a low-entry setup.
+        if decline and exit_position in {"soft", "strong", "extreme"}:
+            required = 3 if exit_position in {"strong", "extreme"} else 4
+            if weakening_count >= required:
+                if exit_position == "extreme" or (
+                    exit_position == "strong"
+                    and accelerating_down
+                    and weakening_count >= 4
+                ):
+                    return "high_level_breakdown", "breakdown_from_high", "exit"
+                return "high_level_breakdown", "breakdown_from_high", "reduce"
 
         # A sharp recent sell-off can have a low 20-day efficiency ratio after
         # reversing an earlier rally.  It is still a decline, not a quiet range.
@@ -531,10 +648,9 @@ class TimingStateAnalyzer:
             if extreme_entry:
                 return "declining_exhaustion", "decelerating_down", "accumulate"
             low_buy = (
-                price_zone in {"extreme_low", "low", "mid"}
-                and (metrics.get("price_percentile_120") or 100) <= 40
+                entry_position in {"strong", "soft"}
                 and volume_state in {"contraction", "extreme_contraction"}
-                and bool(safety_evidence)
+                and len(safety_dimensions) >= (1 if entry_position == "strong" else 2)
                 and not accelerating_down
             )
             if low_buy:
@@ -546,9 +662,10 @@ class TimingStateAnalyzer:
             )
 
         if advance:
-            if price_zone == "extreme_high" and len(weakening_dimensions) >= 2:
+            if exit_position == "extreme" and weakening_count >= 2:
                 return "advancing_exhaustion", "exhausted_up", "exit"
-            if price_zone in {"high", "extreme_high"} and len(weakening_dimensions) >= 2:
+            required = 2 if exit_position in {"strong", "extreme"} else 3
+            if exit_position != "none" and weakening_count >= required:
                 return "advancing_weakening", "weakening_up", "reduce"
             return "advancing", "healthy_up", "hold"
 
@@ -564,7 +681,11 @@ class TimingStateAnalyzer:
     ) -> str:
         if data_quality == "insufficient" or phase == "unknown":
             return "低"
-        evidence_count = safety_count if phase.startswith("declining") else weakening_dimension_count
+        evidence_count = (
+            safety_count
+            if phase.startswith("declining")
+            else weakening_dimension_count
+        )
         if data_quality == "full" and evidence_count >= 3:
             return "高"
         if data_quality == "full" or evidence_count >= 2:
@@ -582,11 +703,18 @@ class TimingStateAnalyzer:
         weakening_evidence: List[str],
     ) -> List[str]:
         price_pct = metrics.get("price_percentile_120")
+        price_pct_240 = metrics.get("price_percentile_240")
+        blended_pct = metrics.get("blended_price_percentile")
         volume_pct = metrics.get("volume_percentile_120")
         volume_ratio = metrics.get("volume_ratio_5_20")
         contraction_streak = metrics.get("volume_contraction_streak") or 0
         evidence = [
-            f"[价格位置] 120日价格分位{price_pct:.1f}%，区间={price_zone}"
+            (
+                f"[价格位置] 120/240日分位{price_pct:.1f}%/{price_pct_240:.1f}%，"
+                f"综合分位{blended_pct:.1f}%，120日区间={price_zone}"
+            )
+            if price_pct is not None and price_pct_240 is not None and blended_pct is not None
+            else f"[价格位置] 120日价格分位{price_pct:.1f}%，区间={price_zone}"
             if price_pct is not None
             else "[价格位置] 长周期价格分位不可用",
             f"[量能] 5日均量分位{volume_pct:.1f}%，5/20量比{volume_ratio:.2f}，持续缩量{contraction_streak}日，状态={volume_state}"
@@ -595,7 +723,7 @@ class TimingStateAnalyzer:
         ]
         if phase.startswith("declining"):
             evidence.extend(safety_evidence[:4])
-        elif phase.startswith("advancing"):
+        elif phase.startswith("advancing") or phase == "high_level_breakdown":
             evidence.extend(weakening_evidence[:4])
         else:
             evidence.append(
@@ -612,6 +740,7 @@ class TimingStateAnalyzer:
             "advancing": "上涨结构仍健康，暂未出现足够退出证据",
             "advancing_weakening": "高位上涨动能跨维度减弱，适合减仓",
             "advancing_exhaustion": "极高位出现双重衰竭证据，适合清仓",
+            "high_level_breakdown": "长期相对高位出现多维破位，按严重程度减仓或清仓",
             "structural_risk": "基本面或结构性硬风险优先，适合清仓",
             "unknown": "数据不足，无法可靠识别周期阶段",
         }

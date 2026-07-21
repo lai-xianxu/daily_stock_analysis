@@ -166,7 +166,9 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("反向周期择时策略契约", current_prompt)
         self.assertIn("`sentiment_score` 只是旧接口兼容字段，固定填 50", current_prompt)
         self.assertIn("机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数", current_prompt)
-        self.assertIn("价格极高且已有至少两个独立衰竭维度才能 `exit`", current_prompt)
+        self.assertIn("120日30%分位只是一项强位置证据，不是绝对开关", current_prompt)
+        self.assertIn("`high_level_breakdown`", current_prompt)
+        self.assertIn("条件或否定表述不得触发清仓", current_prompt)
         self.assertNotIn("### 适合减仓（20-39分）", current_prompt)
         self.assertNotIn("Canonical 评分与动作口径", current_prompt)
 

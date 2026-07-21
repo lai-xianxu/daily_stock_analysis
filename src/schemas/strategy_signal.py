@@ -26,6 +26,7 @@ TimingPhase = Literal[
     "advancing",
     "advancing_weakening",
     "advancing_exhaustion",
+    "high_level_breakdown",
     "structural_risk",
     "unknown",
 ]
@@ -104,13 +105,13 @@ MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
 
 先读取系统提供的 `dashboard.timing_state` 或 `[系统计算的周期状态]`。该对象由已完成日线机械计算，是技术阶段的权威约束；不得用主观判断、单日涨跌或旧趋势评分改写阶段。`sentiment_score` 只是旧接口兼容字段，不参与信号选择。
 
-1. **硬风险优先**：重大业绩恶化、财务或治理风险、监管处罚、退市风险等直接进入 `structural_risk/exit`，并否决任何超跌买入。
-2. **下跌低吸**：`declining` 阶段无需等待趋势反转，但必须同时具备低位、缩量、跌速未加快和独立安全证据。机器候选可直接采用；若机器只缺最后一项安全证据，模型可用方向明确的资金筹码、行业市场或基本面改善证据补足。加速下跌或放量破位只能 `watch`。
+1. **硬风险优先**：只有已经确认的重大业绩恶化、财务或治理风险、监管处罚、退市风险等才进入 `structural_risk/exit`；“若出现”“可能”“未发现”“未确认”“需核验”等条件或否定表述不得触发清仓。
+2. **下跌低吸**：`declining` 阶段无需等待趋势反转，但必须同时具备偏低位置、缩量、跌速未加快和独立安全证据。120日30%分位只是一项强位置证据，不是绝对开关；30%-45%的偏低区必须再增加一项独立安全确认。加速下跌或放量破位只能 `watch`。
 3. **极限抢筹**：价格极低、量能极缩且跌速未加快时，至少再有一项动能、波动、承接或方向明确的外部改善证据才能输出 `accumulate`。模型可因基本面或市场风险降级为 `low_buy/watch`，不可绕过价格、量能和跌速前置条件。
 4. **横盘观察**：`range_bound` 固定为 `watch`，描述箱体上下沿和突破条件，不输出理想买点。
 5. **健康上涨**：`advancing` 默认 `hold`。高位或上涨本身绝不是买入依据；只有机器证据与方向明确的外部转弱证据合计满足后两条时，才可升级为减仓或清仓。
-6. **上涨减仓**：高位上涨须已有至少两个独立衰减维度才能 `reduce`，且至少一个不是成交量；机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数。
-7. **极致清仓**：价格极高且已有至少两个独立衰竭维度才能 `exit`，无需等待价格明显转头；价格极高或上涨缩量单独都不够。
+6. **上涨减仓**：价格位置由120/240日分位和中期结构共同确认。强高位通常需要两个独立衰减维度；55%-70%的偏高区必须至少三个维度，且至少一个不是成交量，不能把70%当成绝对开关。机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数。
+7. **极致清仓与高位破位**：极高位至少两个衰竭维度可 `exit`；仍处长期相对高位但已转为下跌时，放量、动能、波动和结构破坏等至少三项确认后进入 `high_level_breakdown`，按严重程度 `reduce/exit`。
 8. **数据约束**：资金流缺失只降低置信度，不能自动改变主信号；关键信息缺失必须披露，禁止编造数字或点位。
 
 兼容动作映射保持：`watch→watch/hold`、`low_buy→buy/buy`、`accumulate→buy/buy`、`hold→hold/hold`、`reduce→reduce/sell`、`exit→sell/sell`。不得读取或推断个人持仓、成本和仓位比例。
@@ -126,7 +127,7 @@ MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
     "reasons": ["[基本面] 实际证据", "[价格位置] 实际证据", "[量价资金] 实际证据"],
     "upgrade_trigger": "升级为更积极信号的可验证条件",
     "downgrade_trigger": "降级或失效的可验证条件",
-    "cycle_phase": "declining/declining_exhaustion/range_bound/advancing/advancing_weakening/advancing_exhaustion/structural_risk/unknown",
+    "cycle_phase": "declining/declining_exhaustion/range_bound/advancing/advancing_weakening/advancing_exhaustion/high_level_breakdown/structural_risk/unknown",
     "price_zone": "extreme_low/low/mid/high/extreme_high",
     "reference_points": {"zone_label": "动作对应点位名称", "zone": "可靠价格区间或N/A", "risk_label": "失效或下一触发名称", "risk_line": "可靠价格或条件"}
 }
@@ -179,6 +180,7 @@ def strategy_signal_definition_for_timing_state(payload: Any) -> StrategySignalD
         "advancing": "hold",
         "advancing_weakening": "reduce",
         "advancing_exhaustion": "exit",
+        "high_level_breakdown": "reduce",
         "structural_risk": "exit",
         "unknown": "watch",
     }

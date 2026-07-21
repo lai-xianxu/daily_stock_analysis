@@ -431,8 +431,15 @@ Modify time: Edit cron expression in `.github/workflows/00-daily-analysis.yml`:
 
 ```yaml
 schedule:
-  - cron: '30 7 * * 1-5'  # UTC time, +8 = Beijing time
+  - cron: '30 15 * * 1-5'
+    timezone: 'Asia/Shanghai'
+  - cron: '41 15 * * 1-5'  # staggered fallback
+    timezone: 'Asia/Shanghai'
+  - cron: '52 15 * * 1-5'  # staggered fallback
+    timezone: 'Asia/Shanghai'
 ```
+
+15:30 is the primary trigger. The 15:41 and 15:52 entries are staggered fallbacks for delayed or dropped GitHub schedules. Before analysis, the workflow checks the Actions history and skips a fallback when a successful scheduled run already exists for the same Beijing calendar date, preventing duplicate notifications.
 
 Common cron examples:
 | Expression | Description |
@@ -456,7 +463,7 @@ git push
 ### FAQ
 
 **Q: Why isn't the scheduled task running?**
-A: GitHub Actions schedules can be delayed by platform queue load, and queued runs can be dropped under extreme load. Scheduled workflows in public repositories are automatically disabled after 60 days without repository activity; check the Actions history and workflow status.
+A: GitHub Actions cron is best-effort rather than punctual; platform load can delay or drop a scheduled event. The default workflow therefore uses two staggered fallbacks with Beijing-date deduplication. Scheduled workflows in public repositories are still disabled after 60 days without repository activity, so check the Actions history and workflow status.
 
 **Q: How to view historical reports?**
 A: Actions → Select run record → Artifacts → Download `analysis-reports-xxx`

@@ -149,11 +149,11 @@ def test_high_advance_with_volume_and_momentum_weakening_emits_reduce() -> None:
     assert {"volume", "momentum"} <= set(state["weakening_dimensions"])
 
 
-def test_extreme_advance_with_two_weakening_dimensions_emits_exit() -> None:
+def test_extreme_advance_with_only_two_weakening_dimensions_emits_reduce() -> None:
     state = analyze_timing_state(_weakening_advance(extreme=True), "TEST").to_dict()
 
-    assert state["phase"] == "advancing_exhaustion"
-    assert state["suggested_signal"] == "exit"
+    assert state["phase"] == "advancing_weakening"
+    assert state["suggested_signal"] == "reduce"
     assert len(state["weakening_dimensions"]) >= 2
 
 
@@ -232,7 +232,7 @@ def test_high_level_breakdown_is_not_misclassified_as_low_entry_decline() -> Non
     assert len(state["weakening_dimensions"]) >= 3
 
 
-def test_high_position_accelerating_breakdown_can_exit_below_90th_percentile() -> None:
+def test_high_position_accelerating_breakdown_below_extreme_only_reduces() -> None:
     analyzer = TimingStateAnalyzer()
     metrics = {
         "price_percentile_120": 78.75,
@@ -274,7 +274,43 @@ def test_high_position_accelerating_breakdown_can_exit_below_90th_percentile() -
     assert set(dimensions) == {"momentum", "structure", "volume", "volatility"}
     assert phase == "high_level_breakdown"
     assert momentum == "breakdown_from_high"
-    assert signal == "exit"
+    assert signal == "reduce"
+
+
+def test_extreme_high_three_dimension_exhaustion_requires_full_data_for_exit() -> None:
+    analyzer = TimingStateAnalyzer()
+    metrics = {
+        "current_price": 120.0,
+        "ma20": 110.0,
+        "return_5": 0.02,
+        "return_20": 0.15,
+        "ma20_slope_atr": 1.0,
+        "efficiency_ratio_20": 0.6,
+        "bb_width_percentile_120": 60.0,
+        "ma_spread_atr": 2.0,
+        "exit_position_strength": "extreme",
+    }
+    dimensions = ["volume", "momentum", "structure"]
+
+    full_phase, _, full_signal = analyzer._classify(
+        metrics=metrics,
+        price_zone="extreme_high",
+        volume_state="contraction",
+        safety_evidence=[],
+        weakening_dimensions=dimensions,
+        data_quality="full",
+    )
+    partial_phase, _, partial_signal = analyzer._classify(
+        metrics=metrics,
+        price_zone="extreme_high",
+        volume_state="contraction",
+        safety_evidence=[],
+        weakening_dimensions=dimensions,
+        data_quality="partial",
+    )
+
+    assert (full_phase, full_signal) == ("advancing_exhaustion", "exit")
+    assert (partial_phase, partial_signal) == ("advancing_weakening", "reduce")
 
 
 def test_target_date_excludes_later_intraday_or_future_bar() -> None:

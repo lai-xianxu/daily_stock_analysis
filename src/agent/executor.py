@@ -127,7 +127,8 @@ LEGACY_DEFAULT_AGENT_SYSTEM_PROMPT = """你是一位专注于趋势交易的{mar
             "risk_alerts": [],
             "positive_catalysts": [],
             "earnings_outlook": "",
-            "sentiment_summary": ""
+            "sentiment_summary": "",
+            "hard_risk_assessment": {{"status": "none", "category": null, "event_date": "", "evidence": "", "source": ""}}
         }},
         "battle_plan": {{
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
@@ -318,7 +319,8 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
             "risk_alerts": [],
             "positive_catalysts": [],
             "earnings_outlook": "",
-            "sentiment_summary": ""
+            "sentiment_summary": "",
+            "hard_risk_assessment": {{"status": "none", "category": null, "event_date": "", "evidence": "", "source": ""}}
         }},
         "battle_plan": {{
             "sniper_points": {{"ideal_buy": "", "secondary_buy": "", "stop_loss": "", "take_profit": ""}},
@@ -367,8 +369,9 @@ AGENT_SYSTEM_PROMPT = """你是一位{market_role}投资分析 Agent，拥有数
 - `declining`：综合位置偏低、缩量、跌速未加快时，系统候选可直接采用；30%-45%偏低软区需要比强低位多一项独立确认，不得等待金叉后才承认低吸。
 - 价格极低、量能极缩且跌速未加快时，允许用一项机器衰竭或方向明确的外部改善证据补足 `accumulate`；基本面或市场风险可降为 `low_buy/watch`。
 - `range_bound`：固定 `watch`；只展示箱体区间，不输出理想买点。
-- `advancing`：默认 `hold`；高位和上涨不得输出买入。强高位至少两个独立转弱维度才可 `reduce`，55%-70%偏高软区至少三个维度；极高位满足双重衰竭才可 `exit`。
-- `advancing_weakening`：输出 `reduce`；`advancing_exhaustion` 输出 `exit`；`high_level_breakdown` 按机器严重程度输出 `reduce/exit`；只有已确认的 `structural_risk` 才直接 `exit`。
+- `advancing`：默认 `hold`；高位和上涨不得输出买入。强高位至少两个独立转弱维度才可 `reduce`，55%-70%偏高软区至少三个维度。
+- 技术性 `exit` 仅限综合极高位、完整已收盘日线和至少三个独立衰竭维度同时成立，且至少一个维度不是成交量；`high_level_breakdown` 默认 `reduce`，只有仍满足该极致门槛才可 `exit`。
+- `risk_alerts` 只用于展示；只有 `hard_risk_assessment` 为 `confirmed` 且类别、日期、肯定证据和来源完整时，才可按 `structural_risk` 直接 `exit`。未检索到、数据缺失、无法判断、假设或待核验文字不得触发清仓。
 - 上涨缩量或价格极高都只是单一证据，不能单独触发减仓或清仓。
 
 ## 决策仪表盘核心原则

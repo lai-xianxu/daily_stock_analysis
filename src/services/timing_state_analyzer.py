@@ -142,6 +142,7 @@ class TimingStateAnalyzer:
             volume_state=volume_state,
             safety_evidence=safety_evidence,
             weakening_dimensions=weakening_dimensions,
+            data_quality=data_quality,
         )
         confidence = self._confidence(
             phase=phase,
@@ -589,6 +590,7 @@ class TimingStateAnalyzer:
         volume_state: str,
         safety_evidence: List[str],
         weakening_dimensions: List[str],
+        data_quality: str = "full",
     ) -> tuple[str, str, str]:
         current = metrics.get("current_price") or 0
         ma20 = metrics.get("ma20") or current
@@ -616,16 +618,18 @@ class TimingStateAnalyzer:
             if item.startswith("[") and "]" in item
         }
         weakening_count = len(set(weakening_dimensions))
+        has_non_volume_weakness = any(item != "volume" for item in weakening_dimensions)
 
         # A stock can already be falling while still sitting high in its longer
         # cycle. Treat that as a high-level breakdown instead of a low-entry setup.
         if decline and exit_position in {"soft", "strong", "extreme"}:
             required = 3 if exit_position in {"strong", "extreme"} else 4
             if weakening_count >= required:
-                if exit_position == "extreme" or (
-                    exit_position == "strong"
-                    and accelerating_down
-                    and weakening_count >= 4
+                if (
+                    data_quality == "full"
+                    and exit_position == "extreme"
+                    and weakening_count >= 3
+                    and has_non_volume_weakness
                 ):
                     return "high_level_breakdown", "breakdown_from_high", "exit"
                 return "high_level_breakdown", "breakdown_from_high", "reduce"
@@ -662,7 +666,12 @@ class TimingStateAnalyzer:
             )
 
         if advance:
-            if exit_position == "extreme" and weakening_count >= 2:
+            if (
+                data_quality == "full"
+                and exit_position == "extreme"
+                and weakening_count >= 3
+                and has_non_volume_weakness
+            ):
                 return "advancing_exhaustion", "exhausted_up", "exit"
             required = 2 if exit_position in {"strong", "extreme"} else 3
             if exit_position != "none" and weakening_count >= required:
@@ -739,8 +748,8 @@ class TimingStateAnalyzer:
             "range_bound": "趋势效率偏低，处于横盘震荡观察期",
             "advancing": "上涨结构仍健康，暂未出现足够退出证据",
             "advancing_weakening": "高位上涨动能跨维度减弱，适合减仓",
-            "advancing_exhaustion": "极高位出现双重衰竭证据，适合清仓",
-            "high_level_breakdown": "长期相对高位出现多维破位，按严重程度减仓或清仓",
+            "advancing_exhaustion": "极高位出现至少三类独立衰竭证据，适合清仓",
+            "high_level_breakdown": "长期相对高位出现多维破位，默认适合减仓",
             "structural_risk": "基本面或结构性硬风险优先，适合清仓",
             "unknown": "数据不足，无法可靠识别周期阶段",
         }

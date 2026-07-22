@@ -20,7 +20,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple, TYPE_CHECKING
+from typing import List, Dict, Any, Mapping, Optional, Tuple, TYPE_CHECKING
 from enum import Enum
 
 from src.config import Config, get_config
@@ -2475,6 +2475,7 @@ class NotificationService(
         severity: Optional[str] = None,
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
+        channel_content_overrides: Optional[Mapping[str, str]] = None,
     ) -> NotificationDispatchResult:
         """
         Send a notification and return per-channel diagnostics.
@@ -2495,6 +2496,7 @@ class NotificationService(
             severity: 通知严重级别；未设置时按路由类型推断
             dedup_key: 可选稳定去重 key；未设置时使用内容 hash
             cooldown_key: 可选冷却 key；未设置时使用路由/级别默认 key
+            channel_content_overrides: 按渠道 value 覆盖文本内容；飞书文件报告始终保留完整正文
 
         Returns:
             Structured dispatch diagnostics.
@@ -2621,10 +2623,24 @@ class NotificationService(
             channel_name = ChannelDetector.get_channel_name(channel)
             started_at = time.monotonic()
             try:
+                channel_content = content
+                override = (
+                    channel_content_overrides.get(channel.value)
+                    if isinstance(channel_content_overrides, Mapping)
+                    else None
+                )
+                feishu_file_report = (
+                    channel == NotificationChannel.FEISHU
+                    and getattr(self, "_feishu_send_as_file", False)
+                    and route_type == "report"
+                )
+                if isinstance(override, str) and override.strip() and not feishu_file_report:
+                    channel_content = override.strip()
+                channel_image_bytes = image_bytes if channel_content == content else None
                 result = self._send_to_static_channel(
                     channel,
-                    content,
-                    image_bytes=image_bytes,
+                    channel_content,
+                    image_bytes=channel_image_bytes,
                     email_stock_codes=email_stock_codes,
                     email_send_to_all=email_send_to_all,
                     route_type=route_type,
@@ -2689,6 +2705,7 @@ class NotificationService(
         severity: Optional[str] = None,
         dedup_key: Optional[str] = None,
         cooldown_key: Optional[str] = None,
+        channel_content_overrides: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送。
@@ -2704,6 +2721,7 @@ class NotificationService(
             severity=severity,
             dedup_key=dedup_key,
             cooldown_key=cooldown_key,
+            channel_content_overrides=channel_content_overrides,
         )
         return bool(result.success)
 

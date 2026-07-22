@@ -490,6 +490,49 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
         mock_save.assert_not_called()
 
     @mock.patch("src.notification.get_config")
+    def test_channel_content_override_only_changes_feishu_text(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            custom_webhook_urls=["https://example.com/hook"],
+            feishu_send_as_file=False,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_to_feishu", return_value=True) as mock_feishu, \
+             mock.patch.object(service, "send_to_custom", return_value=True) as mock_custom:
+            result = service.send_with_results(
+                "full market report",
+                route_type="report",
+                channel_content_overrides={"feishu": "compact market digest"},
+            )
+
+        self.assertTrue(result.success)
+        mock_feishu.assert_called_once_with("compact market digest")
+        mock_custom.assert_called_once_with("full market report")
+
+    @mock.patch("src.notification.get_config")
+    def test_feishu_file_report_ignores_text_override(self, mock_get_config):
+        cfg = _make_config(
+            feishu_webhook_url="https://feishu.example/hook",
+            feishu_send_as_file=True,
+        )
+        mock_get_config.return_value = cfg
+        service = NotificationService()
+
+        with mock.patch.object(service, "send_feishu_file", return_value=True) as mock_file, \
+             mock.patch.object(service, "save_report_to_file", return_value="/tmp/report.md") as mock_save:
+            result = service.send_with_results(
+                "full market report",
+                route_type="report",
+                channel_content_overrides={"feishu": "compact market digest"},
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(mock_save.call_args.args[0], "full market report")
+        mock_file.assert_called_once_with("/tmp/report.md")
+
+    @mock.patch("src.notification.get_config")
     def test_feishu_send_as_file_alert_does_not_leak_into_other_channels(self, mock_get_config):
         """FEISHU_SEND_AS_FILE only affects Feishu, not other channels."""
         cfg = _make_config(

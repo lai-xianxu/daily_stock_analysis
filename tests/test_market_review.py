@@ -85,6 +85,25 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         market_analyzer.run_daily_review_with_snapshot.return_value = SimpleNamespace(
             report="## 2026-04-10 A-share Market Recap\n\nBody",
             market_light_snapshot={"region": "cn", "trade_date": "2026-04-10", "score": 60},
+            structured_payload={
+                "kind": "market_review",
+                "region": "cn",
+                "language": "en",
+                "title": "2026-04-10 A-share Market Recap",
+                "notification_digest": {
+                    "market_state": "Balanced",
+                    "stance": "Wait for breadth confirmation",
+                    "key_data": "Advancers/decliners/flat 2200/1800/100",
+                    "index_structure": "SSE Composite +0.60%",
+                    "leaders": "Semiconductors +2.10%",
+                    "laggards": "Coal -0.80%",
+                    "maintain_trigger": "Leadership and turnover hold",
+                    "downgrade_trigger": "Turnover contracts",
+                    "defense_trigger": "Core indices lose support",
+                    "primary_risk": "Leadership reverses",
+                    "data_limitations": "None material",
+                },
+            },
         )
 
         with patch.object(
@@ -103,10 +122,65 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertTrue(saved_content.startswith("# 🎯 Market Review\n\n"))
         sent_content = notifier.send.call_args.args[0]
         self.assertTrue(sent_content.startswith("🎯 Market Review\n\n"))
+        feishu_content = notifier.send.call_args.kwargs["channel_content_overrides"]["feishu"]
+        self.assertTrue(feishu_content.startswith("🎯 Market Review\n\n"))
+        self.assertIn("**Market state**", feishu_content)
+        self.assertIn("Wait for breadth confirmation", feishu_content)
+        self.assertNotEqual(feishu_content, sent_content)
+        self.assertNotIn("| Open |", feishu_content)
         self.assertTrue(notifier.send.call_args.kwargs["email_send_to_all"])
         self.assertEqual(notifier.send.call_args.kwargs["route_type"], "report")
         persist_history.assert_called_once()
         self.assertTrue(persist_history.call_args.kwargs["query_id"].startswith("market_review_"))
+
+    def test_market_notification_digest_is_bounded_ordered_and_table_free(self) -> None:
+        payload = {
+            "language": "zh",
+            "title": "2026-07-21 A股复盘",
+            "notification_digest": {
+                "market_state": (
+                    "指数震荡偏强但赚钱效应继续分化，强势方向集中于科技成长，低位板块承接一般；"
+                    "个股表现与指数并不同步，短线胜率仍取决于主线持续性"
+                ),
+                "stance": (
+                    "当日以均衡持仓为主，不追高，等待成交额与市场宽度共同确认；"
+                    "不因单日指数上涨主动提高风险暴露"
+                ),
+                "key_data": "上涨/下跌/平盘 2860/2240/110，涨停/跌停 68/7，成交额15860亿元，宽度小幅占优",
+                "index_structure": "上证指数+0.62%保持稳定，科创50+1.20%最强，创业板指-0.45%偏弱，大小盘继续分化",
+                "leaders": "半导体+3.25%、通信设备+2.18%、电网设备+1.76%，主线仍由业绩与订单催化",
+                "laggards": "煤炭-1.12%、银行-0.86%，防御方向承接减弱",
+                "maintain_trigger": "成交保持在1.5万亿元以上，半导体主线承接延续，核心指数不出现明显冲高回落",
+                "downgrade_trigger": "指数仍强但成交跌破1.3万亿元，主线分化、炸板率与尾盘回落同步扩大",
+                "defense_trigger": "核心指数跌破短期支撑，跌停增至15家以上且下跌家数持续扩散，转为防守",
+                "primary_risk": "高位科技方向交易拥挤，若增量资金不足，快速兑现可能拖累指数并压缩次日修复空间",
+                "data_limitations": "北向资金口径缺失，行业排行采用盘后结构化快照，需结合次日成交验证",
+            },
+        }
+
+        markdown = market_review_module._render_market_review_notification_markdown(
+            payload,
+            wrapper_title="# 大盘复盘",
+        )
+
+        self.assertGreaterEqual(len(markdown), 600)
+        self.assertLessEqual(len(markdown), 900)
+        labels = [
+            "市场状态",
+            "关键数据",
+            "指数结构",
+            "主线/弱项",
+            "维持条件",
+            "降档条件",
+            "防守条件",
+            "最大风险",
+            "数据限制",
+        ]
+        self.assertEqual([markdown.count(label) for label in labels], [1] * len(labels))
+        self.assertEqual([markdown.index(label) for label in labels], sorted(markdown.index(label) for label in labels))
+        self.assertNotIn("| 指数", markdown)
+        self.assertNotIn("Top 5", markdown)
+        self.assertNotIn("激进型", markdown)
 
     def test_run_market_review_can_skip_report_file_for_context_generation(self) -> None:
         notifier = self._make_notifier()
@@ -441,6 +515,10 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertEqual(set(snapshots), {"cn", "us"})
         self.assertEqual(snapshots["cn"]["score"], 60)
         self.assertEqual(snapshots["us"]["score"], 55)
+        payload = persist_history.call_args.kwargs["market_review_payload"]
+        self.assertIn("notification_markdown", payload)
+        self.assertIn("notification_markdown", payload["markets"]["cn"])
+        self.assertIn("notification_markdown", payload["markets"]["us"])
 
     def test_run_market_review_jp_kr_skips_market_light_snapshot_schema(self) -> None:
         notifier = self._make_notifier()

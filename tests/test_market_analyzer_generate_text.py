@@ -3175,6 +3175,8 @@ Sector text.
 
         assert "breadth" not in payload
         assert payload["indices"][0]["name"] == "上证指数"
+        assert payload["notification_digest"]["key_data"] == "市场宽度与成交汇总数据不可用"
+        assert "市场宽度数据缺失" in payload["notification_digest"]["data_limitations"]
 
     def test_market_review_payload_includes_breadth_only_when_stats_available(self):
         from src.market_analyzer import MarketIndex, MarketOverview
@@ -3203,6 +3205,70 @@ Sector text.
         assert payload["breadth"]["down_count"] == 900
         assert payload["breadth"]["limit_up_count"] == 12
         assert payload["breadth"]["total_amount"] == 12345.0
+
+    def test_market_review_payload_includes_structured_notification_digest(self):
+        from src.market_analyzer import MarketIndex, MarketOverview
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value="复盘结果")
+        report = """## 2026-07-21 A股复盘
+
+> 震荡偏强但结构分化，科技主线占优。
+
+- 进攻：成交额维持在1.5万亿元以上，主线承接稳定。
+
+- 均衡：成交回落且板块分化扩大，降低追高频率。
+
+- 防守：核心指数跌破短期支撑，跌停家数明显增加。
+
+### 七、风险提示
+- 高位科技方向交易拥挤，需防范快速兑现。
+"""
+        payload = ma.build_market_review_payload(
+            MarketOverview(
+                date="2026-07-21",
+                indices=[
+                    MarketIndex(code="000001", name="上证指数", current=3550.0, change_pct=0.62),
+                    MarketIndex(code="000688", name="科创50", current=1120.0, change_pct=1.20),
+                ],
+                up_count=2860,
+                down_count=2240,
+                flat_count=110,
+                limit_up_count=68,
+                limit_down_count=7,
+                total_amount=15860.0,
+                top_sectors=[{"name": "半导体", "change_pct": 3.25}],
+                bottom_sectors=[{"name": "煤炭", "change_pct": -1.12}],
+            ),
+            [],
+            report,
+            market_light_snapshot={
+                "temperature_label": "偏强",
+                "label": "均衡",
+                "guidance": "均衡持仓，不追高，等待量价确认。",
+                "data_quality": "ok",
+                "dimensions": {"breadth": {"score": 62, "available": True}},
+            },
+        )
+
+        digest = payload["notification_digest"]
+        assert set(digest) == {
+            "market_state",
+            "stance",
+            "key_data",
+            "index_structure",
+            "leaders",
+            "laggards",
+            "maintain_trigger",
+            "downgrade_trigger",
+            "defense_trigger",
+            "primary_risk",
+            "data_limitations",
+        }
+        assert "震荡偏强" in digest["market_state"]
+        assert "2860/2240/110" in digest["key_data"]
+        assert "上证指数 +0.62%" in digest["index_structure"]
+        assert "成交额维持" in digest["maintain_trigger"]
+        assert "高位科技方向交易拥挤" in digest["primary_risk"]
 
     def test_market_review_includes_concept_rankings_in_prompt_payload_and_tables(self):
         from src.market_analyzer import MarketIndex, MarketOverview

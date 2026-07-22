@@ -55,6 +55,19 @@ class TimingState(BaseModel):
     reference_points: dict[str, str] = Field(default_factory=dict)
 
 
+class DecisionOverride(BaseModel):
+    """Optional final-decision override without mutating the machine phase."""
+
+    applied: bool = False
+    reason_code: Optional[str] = None
+    source_phase: Optional[TimingPhase] = None
+    final_phase: Optional[TimingPhase] = None
+    category: Optional[str] = None
+    event_date: Optional[str] = None
+    evidence: Optional[str] = None
+    source: Optional[str] = None
+
+
 class StrategySignal(BaseModel):
     """Optional dashboard contract emitted by the multidimensional strategy."""
 
@@ -68,6 +81,7 @@ class StrategySignal(BaseModel):
     cycle_phase: Optional[TimingPhase] = None
     price_zone: Optional[str] = None
     reference_points: dict[str, str] = Field(default_factory=dict)
+    decision_override: Optional[DecisionOverride] = None
 
 
 @dataclass(frozen=True)
@@ -105,13 +119,13 @@ MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
 
 先读取系统提供的 `dashboard.timing_state` 或 `[系统计算的周期状态]`。该对象由已完成日线机械计算，是技术阶段的权威约束；不得用主观判断、单日涨跌或旧趋势评分改写阶段。`sentiment_score` 只是旧接口兼容字段，不参与信号选择。
 
-1. **硬风险优先**：只有已经确认的重大业绩恶化、财务或治理风险、监管处罚、退市风险等才进入 `structural_risk/exit`；“若出现”“可能”“未发现”“未确认”“需核验”等条件或否定表述不得触发清仓。
+1. **硬风险优先**：只有 `dashboard.intelligence.hard_risk_assessment.status=confirmed`，且类别、日期、证据和来源完整的重大业绩恶化、财务或治理风险、监管处罚、退市风险等才进入 `structural_risk/exit`。普通 `risk_alerts` 只用于展示，不能改变主信号；“若出现”“可能”“未发现”“未检索到”“数据缺失”“无法判断”“需核验”等条件、否定或缺失表述不得触发清仓。
 2. **下跌低吸**：`declining` 阶段无需等待趋势反转，但必须同时具备偏低位置、缩量、跌速未加快和独立安全证据。120日30%分位只是一项强位置证据，不是绝对开关；30%-45%的偏低区必须再增加一项独立安全确认。加速下跌或放量破位只能 `watch`。
 3. **极限抢筹**：价格极低、量能极缩且跌速未加快时，至少再有一项动能、波动、承接或方向明确的外部改善证据才能输出 `accumulate`。模型可因基本面或市场风险降级为 `low_buy/watch`，不可绕过价格、量能和跌速前置条件。
 4. **横盘观察**：`range_bound` 固定为 `watch`，描述箱体上下沿和突破条件，不输出理想买点。
 5. **健康上涨**：`advancing` 默认 `hold`。高位或上涨本身绝不是买入依据；只有机器证据与方向明确的外部转弱证据合计满足后两条时，才可升级为减仓或清仓。
 6. **上涨减仓**：价格位置由120/240日分位和中期结构共同确认。强高位通常需要两个独立衰减维度；55%-70%的偏高区必须至少三个维度，且至少一个不是成交量，不能把70%当成绝对开关。机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数。
-7. **极致清仓与高位破位**：极高位至少两个衰竭维度可 `exit`；仍处长期相对高位但已转为下跌时，放量、动能、波动和结构破坏等至少三项确认后进入 `high_level_breakdown`，按严重程度 `reduce/exit`。
+7. **极致清仓与高位破位**：技术性 `exit` 必须同时具备综合极高位置、完整已收盘日线、至少三个独立衰竭维度且至少一个不是成交量。普通或强高位转为下跌时进入 `high_level_breakdown` 并输出 `reduce`；只有仍满足上述极致条件时才可 `exit`。
 8. **数据约束**：资金流缺失只降低置信度，不能自动改变主信号；关键信息缺失必须披露，禁止编造数字或点位。
 
 兼容动作映射保持：`watch→watch/hold`、`low_buy→buy/buy`、`accumulate→buy/buy`、`hold→hold/hold`、`reduce→reduce/sell`、`exit→sell/sell`。不得读取或推断个人持仓、成本和仓位比例。
@@ -130,6 +144,18 @@ MULTIDIMENSIONAL_STRATEGY_POLICY_PROMPT_ZH = """
     "cycle_phase": "declining/declining_exhaustion/range_bound/advancing/advancing_weakening/advancing_exhaustion/high_level_breakdown/structural_risk/unknown",
     "price_zone": "extreme_low/low/mid/high/extreme_high",
     "reference_points": {"zone_label": "动作对应点位名称", "zone": "可靠价格区间或N/A", "risk_label": "失效或下一触发名称", "risk_line": "可靠价格或条件"}
+}
+```
+
+`dashboard.intelligence` 还必须包含以下对象；没有确认硬风险时使用 `status=none`，不得把数据缺失写成已确认风险：
+
+```json
+"hard_risk_assessment": {
+    "status": "confirmed|unconfirmed|none",
+    "category": "delisting|fraud|adverse_audit|regulatory_action|earnings_collapse|default_or_insolvency|fundamental_reversal|null",
+    "event_date": "YYYY-MM-DD或空字符串",
+    "evidence": "引用输入中已确认的事实或空字符串",
+    "source": "公告、财报或新闻来源或空字符串"
 }
 ```
 

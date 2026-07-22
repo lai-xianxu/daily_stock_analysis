@@ -72,6 +72,7 @@ class DailyMarketContext:
     history_id: Optional[int] = None
     query_id: Optional[str] = None
     full_report: Optional[str] = None
+    notification_report: Optional[str] = None
 
     def to_safe_dict(self) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -618,6 +619,9 @@ class DailyMarketContextService:
             scoped_payload=scoped_payload,
             fallback_full_report=fallback_full_report,
         )
+        notification_report = scoped_payload.get("notification_markdown")
+        if not isinstance(notification_report, str) or not notification_report.strip():
+            notification_report = None
         return DailyMarketContext(
             region=normalized_region,
             trade_date=trade_date,
@@ -629,6 +633,7 @@ class DailyMarketContextService:
             history_id=history_id if isinstance(history_id, int) else None,
             query_id=query_id if isinstance(query_id, str) and query_id else None,
             full_report=full_report,
+            notification_report=notification_report.strip() if notification_report else None,
         )
 
 

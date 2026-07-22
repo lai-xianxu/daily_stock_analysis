@@ -73,6 +73,7 @@ def _attach_timing_state(
         "volume_state": "contraction",
         "momentum_state": "decelerating_down",
         "data_quality": "full",
+        "completed_bar_date": "2026-07-21",
         "suggested_signal": signal,
         "confidence": confidence,
         "summary": "下跌过程中量能和跌速收敛",
@@ -378,14 +379,15 @@ def test_downgrades_sell_near_support_without_sustained_outflow() -> None:
     assert "不宜仅因单日下跌直接卖出" in result.risk_warning
 
 
-def test_preserves_sell_signal_when_significant_risk_exists_near_support() -> None:
+def test_display_risk_alert_does_not_override_timing_signal() -> None:
     result = _result(
-        decision_type="sell",
-        operation_advice="卖出",
-        score=30,
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
         current_price=30.4,
         change_pct=-2.1,
     )
+    _attach_timing_state(result, confidence="中")
     result.risk_warning = "重大利空消息：公司发布重大减持计划"
     result.dashboard["intelligence"] = {"risk_alerts": ["股东高位减持预告"]}
 
@@ -395,8 +397,10 @@ def test_preserves_sell_signal_when_significant_risk_exists_near_support() -> No
         _fund_flow(main=800_000, five_day=1_200_000),
     )
 
-    assert result.decision_type == "sell"
-    assert result.operation_advice == "卖出"
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "low_buy"
+    assert "decision_override" not in strategy
+    assert result.dashboard["timing_state"]["phase"] == "declining"
 
 
 def test_refines_hold_pullback_near_support_as_shakeout_watch() -> None:
@@ -467,11 +471,40 @@ def test_material_fundamental_risk_overrides_extreme_low_accumulation() -> None:
     strategy = result.dashboard["strategy_signal"]
     assert strategy["signal_code"] == "exit"
     assert strategy["cycle_phase"] == "structural_risk"
+    assert strategy["decision_override"]["reason_code"] == "confirmed_hard_risk"
+    assert strategy["decision_override"]["source_phase"] == "declining_exhaustion"
+    assert result.dashboard["timing_state"]["phase"] == "declining_exhaustion"
     assert strategy["reference_points"]["zone_label"] == "清仓触发"
     assert "低吸" not in str(strategy["reference_points"])
     assert "抢筹" not in str(strategy["reference_points"])
     assert result.operation_advice == "适合清仓"
     assert result.action == "sell"
+
+
+def test_narrow_legacy_confirmed_hard_risks_still_force_exit() -> None:
+    warnings = (
+        "公司已实施退市风险警示。",
+        "监管立案已确认。",
+        "审计意见为否定意见。",
+        "公司已发生债务违约。",
+    )
+
+    for warning in warnings:
+        result = _result(
+            decision_type="buy",
+            operation_advice="适合低吸",
+            score=69,
+            current_price=30.4,
+        )
+        _attach_timing_state(result, confidence="中")
+        result.risk_warning = warning
+
+        stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+        strategy = result.dashboard["strategy_signal"]
+        assert strategy["signal_code"] == "exit", warning
+        assert strategy["decision_override"]["reason_code"] == "confirmed_hard_risk", warning
+        assert result.dashboard["timing_state"]["phase"] == "declining", warning
 
 
 def test_generic_financial_data_limitation_does_not_force_exit() -> None:
@@ -529,6 +562,129 @@ def test_unconfirmed_delisting_alert_does_not_force_exit() -> None:
     stabilize_decision_with_structure(result, None, _fund_flow(main=0))
 
     assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_latest_missing_risk_and_financial_text_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.dashboard["intelligence"] = {
+        "risk_alerts": [
+            "2026-07-21：近3日未检索到已确认减持、处罚或重大利空；"
+            "但结构化财报数据缺失，无法判断业绩、现金流和ROE变化。"
+        ]
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "low_buy"
+    assert "decision_override" not in strategy
+
+
+def test_valid_structured_hard_risk_forces_exit_without_mutating_machine_phase() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.dashboard["intelligence"] = {
+        "hard_risk_assessment": {
+            "status": "confirmed",
+            "category": "regulatory_action",
+            "event_date": "2026-07-21",
+            "evidence": "证监会已公告对公司监管立案调查。",
+            "source": "公司监管公告",
+        }
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "exit"
+    assert strategy["cycle_phase"] == "structural_risk"
+    assert strategy["decision_override"] == {
+        "applied": True,
+        "reason_code": "confirmed_hard_risk",
+        "source_phase": "declining",
+        "final_phase": "structural_risk",
+        "category": "regulatory_action",
+        "event_date": "2026-07-21",
+        "evidence": "证监会已公告对公司监管立案调查。",
+        "source": "公司监管公告",
+    }
+    assert result.dashboard["timing_state"]["phase"] == "declining"
+
+
+def test_incomplete_structured_hard_risk_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.dashboard["intelligence"] = {
+        "hard_risk_assessment": {
+            "status": "confirmed",
+            "category": "regulatory_action",
+            "event_date": "",
+            "evidence": "监管立案可能需要核验。",
+            "source": "",
+        }
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    assert result.dashboard["strategy_signal"]["signal_code"] == "low_buy"
+
+
+def test_negated_structured_hard_risk_does_not_force_exit() -> None:
+    result = _result(
+        decision_type="buy",
+        operation_advice="适合低吸",
+        score=69,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, confidence="中")
+    result.dashboard["intelligence"] = {
+        "hard_risk_assessment": {
+            "status": "confirmed",
+            "category": "default_or_insolvency",
+            "event_date": "2026-07-21",
+            "evidence": "公司公告称没有发生债务违约。",
+            "source": "公司公告",
+        }
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "low_buy"
+    assert "decision_override" not in strategy
+
+
+def test_unverified_structural_risk_phase_cannot_bypass_hard_risk_contract() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=30.4,
+    )
+    _attach_timing_state(result, phase="structural_risk", signal="exit", confidence="中")
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "watch"
+    assert "decision_override" not in strategy
+    assert result.dashboard["timing_state"]["phase"] == "structural_risk"
 
 
 def test_conditional_material_risk_warning_does_not_force_exit() -> None:
@@ -648,7 +804,7 @@ def test_external_confirmation_cannot_override_accelerating_decline() -> None:
     assert result.dashboard["strategy_signal"]["signal_code"] == "watch"
 
 
-def test_external_industry_weakness_completes_high_level_exit_evidence() -> None:
+def test_three_weakening_dimensions_complete_extreme_high_exit_evidence() -> None:
     result = _result(
         decision_type="sell",
         operation_advice="适合清仓",
@@ -661,8 +817,13 @@ def test_external_industry_weakness_completes_high_level_exit_evidence() -> None
             "price_zone": "extreme_high",
             "volume_state": "contraction",
             "momentum_state": "healthy_up",
-            "weakening_dimensions": ["volume"],
-            "metrics": {"support_20": 42.0, "resistance_20": 48.5, "resistance_60": 49.0},
+            "weakening_dimensions": ["volume", "momentum"],
+            "metrics": {
+                "exit_position_strength": "extreme",
+                "support_20": 42.0,
+                "resistance_20": 48.5,
+                "resistance_60": 49.0,
+            },
         }
     )
     result.dashboard["strategy_signal"] = {
@@ -679,6 +840,106 @@ def test_external_industry_weakness_completes_high_level_exit_evidence() -> None
     assert strategy["cycle_phase"] == "advancing_exhaustion"
     assert result.dashboard["timing_state"]["phase"] == "advancing"
     assert result.trend_prediction == "上涨极致"
+
+
+def test_partial_data_caps_pure_technical_exit_at_reduce() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=48.0,
+    )
+    _attach_timing_state(result, phase="advancing", signal="hold", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "price_zone": "extreme_high",
+            "volume_state": "contraction",
+            "momentum_state": "healthy_up",
+            "data_quality": "partial",
+            "weakening_dimensions": ["volume", "momentum", "structure"],
+            "metrics": {
+                "exit_position_strength": "extreme",
+                "support_20": 42.0,
+                "resistance_20": 48.5,
+            },
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "exit",
+        "confidence": "中",
+        "summary": "极高位量价和结构同步衰竭",
+        "reasons": ["[结构] 高位破位", "[动能] 动能衰竭"],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=-800_000))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "reduce"
+    assert strategy["cycle_phase"] == "advancing_weakening"
+
+
+def test_missing_external_evidence_does_not_complete_technical_exit() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=48.0,
+    )
+    _attach_timing_state(result, phase="advancing", signal="hold", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "price_zone": "extreme_high",
+            "weakening_dimensions": ["volume", "momentum"],
+            "metrics": {"exit_position_strength": "extreme"},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "exit",
+        "confidence": "中",
+        "summary": "基本面数据缺失，无法判断是否恶化",
+        "reasons": [
+            "[行业市场] 未获取行业相对强弱数据",
+            "[资金筹码] 资金流数据缺失，无法判断是否派发",
+        ],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "reduce"
+    assert result.dashboard["timing_state"].get("external_confirmation_dimensions") == []
+
+
+def test_negated_external_evidence_does_not_complete_technical_exit() -> None:
+    result = _result(
+        decision_type="sell",
+        operation_advice="适合清仓",
+        score=12,
+        current_price=48.0,
+    )
+    _attach_timing_state(result, phase="advancing", signal="hold", confidence="中")
+    result.dashboard["timing_state"].update(
+        {
+            "price_zone": "extreme_high",
+            "weakening_dimensions": ["volume", "momentum"],
+            "metrics": {"exit_position_strength": "extreme"},
+        }
+    )
+    result.dashboard["strategy_signal"] = {
+        "signal_code": "exit",
+        "confidence": "中",
+        "summary": "基本面未恶化，盈利没有下降",
+        "reasons": [
+            "[行业市场] 行业并未转弱",
+            "[资金筹码] 主力资金没有流出或派发",
+        ],
+    }
+
+    stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+
+    strategy = result.dashboard["strategy_signal"]
+    assert strategy["signal_code"] == "reduce"
+    assert result.dashboard["timing_state"].get("external_confirmation_dimensions") == []
 
 
 def test_high_level_volume_weakness_alone_cannot_trigger_exit() -> None:
@@ -708,3 +969,54 @@ def test_high_level_volume_weakness_alone_cannot_trigger_exit() -> None:
     stabilize_decision_with_structure(result, None, _fund_flow(main=0))
 
     assert result.dashboard["strategy_signal"]["signal_code"] == "hold"
+
+
+def test_latest_nine_stock_state_replay_keeps_expected_signal_distribution() -> None:
+    cases = (
+        ("中际旭创", "unknown", "watch"),
+        ("兆易创新", "advancing_weakening", "reduce"),
+        ("佰维存储", "advancing_weakening", "reduce"),
+        ("金盘科技", "range_bound", "watch"),
+        ("润泽科技", "declining", "low_buy"),
+        ("锐捷网络", "advancing", "hold"),
+        ("华丰科技", "high_level_breakdown", "exit"),
+        ("申菱环境", "advancing_weakening", "reduce"),
+        ("中芯国际", "advancing", "hold"),
+    )
+    actual = {}
+
+    for name, phase, expected_signal in cases:
+        decision_type = "sell" if expected_signal in {"reduce", "exit"} else "buy" if expected_signal == "low_buy" else "hold"
+        result = _result(
+            decision_type=decision_type,
+            operation_advice=expected_signal,
+            score=50,
+            current_price=48.0,
+        )
+        result.name = name
+        _attach_timing_state(result, phase=phase, signal=expected_signal, confidence="中")
+        result.dashboard["strategy_signal"] = {
+            "signal_code": expected_signal,
+            "confidence": "中",
+            "summary": "脱敏周期状态回放",
+            "reasons": ["[机器状态] 使用完整已收盘日线重放"],
+        }
+        result.dashboard["intelligence"] = {
+            "risk_alerts": [
+                "近3日未检索到已确认重大利空；财务数据缺失，无法判断基本面变化。"
+            ]
+        }
+        if expected_signal == "exit":
+            result.dashboard["timing_state"].update(
+                {
+                    "price_zone": "extreme_high",
+                    "weakening_dimensions": ["volume", "momentum", "structure"],
+                    "metrics": {"exit_position_strength": "extreme"},
+                }
+            )
+
+        stabilize_decision_with_structure(result, None, _fund_flow(main=0))
+        actual[name] = result.dashboard["strategy_signal"]["signal_code"]
+
+    assert actual == {name: signal for name, _, signal in cases}
+    assert list(actual.values()).count("exit") == 1

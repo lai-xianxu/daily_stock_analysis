@@ -1214,6 +1214,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
             ]
@@ -1300,6 +1301,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
             ]
@@ -1442,6 +1444,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             allow_generate=False,
             target_date=target_date,
             return_full_report=True,
+            return_notification_report=True,
             require_current_query_match=True,
         )
         self.assertEqual(
@@ -1489,7 +1492,11 @@ class MainScheduleModeTestCase(unittest.TestCase):
             pipeline_kwargs.update(kwargs)
             return pipeline
 
-        runtime_context = ("本轮运行时复盘摘要", "## 本轮运行时完整复盘")
+        runtime_context = (
+            "本轮运行时复盘摘要",
+            "## 本轮运行时完整复盘",
+            "## 本轮运行时飞书摘要",
+        )
         with patch.object(main, "_refresh_stock_index_cache_for_analysis") as refresh, \
              patch("main._compute_trading_day_filter", return_value=([], "cn", False)), \
              patch("main._resolve_daily_market_context_target_date", return_value=target_date), \
@@ -1508,6 +1515,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         pipeline.notifier.send.assert_called_once()
         self.assertIn("## 本轮运行时完整复盘", pipeline.notifier.send.call_args.args[0])
         self.assertEqual(pipeline.notifier.send.call_args.kwargs["route_type"], "report")
+        feishu_content = pipeline.notifier.send.call_args.kwargs["channel_content_overrides"]["feishu"]
+        self.assertIn("## 本轮运行时飞书摘要", feishu_content)
+        self.assertNotIn("## 本轮运行时完整复盘", feishu_content)
         query_scoped_read = unittest.mock.call(
             config,
             pipeline=pipeline,
@@ -1516,6 +1526,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
             allow_generate=False,
             target_date=target_date,
             return_full_report=True,
+            return_notification_report=True,
             require_current_query_match=True,
         )
         self.assertEqual(
@@ -1637,6 +1648,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
             ]
@@ -1713,6 +1725,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
                 unittest.mock.call(
@@ -1723,6 +1736,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
             ]
@@ -1763,6 +1777,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                 return_value=(
                     "大盘退潮，高风险，建议观望。",
                     "## 完整大盘复盘\n市场结构偏弱，建议保守。",
+                    "## 飞书大盘摘要\n市场偏防守，等待宽度修复。",
                 ),
              ) as prime_context, \
              patch("main._run_market_review_with_shared_lock") as run_with_lock, \
@@ -1789,6 +1804,7 @@ class MainScheduleModeTestCase(unittest.TestCase):
                     allow_generate=False,
                     target_date=target_date,
                     return_full_report=True,
+                    return_notification_report=True,
                     require_current_query_match=True,
                 ),
             ]
@@ -1806,6 +1822,9 @@ class MainScheduleModeTestCase(unittest.TestCase):
         notifier_message = pipeline.notifier.send.call_args.args[0]
         self.assertIn("## 完整大盘复盘", notifier_message)
         self.assertNotIn("大盘退潮，高风险，建议观望。", notifier_message)
+        feishu_message = pipeline.notifier.send.call_args.kwargs["channel_content_overrides"]["feishu"]
+        self.assertIn("## 飞书大盘摘要", feishu_message)
+        self.assertNotIn("## 完整大盘复盘", feishu_message)
 
     def test_run_market_review_with_shared_lock_forwards_request_config(self) -> None:
         config = self._make_config(

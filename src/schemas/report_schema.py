@@ -10,7 +10,7 @@ Uses Optional for lenient parsing; business-layer integrity checks are separate.
 """
 
 import math
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -81,6 +81,26 @@ class DataPerspective(BaseModel):
     chip_structure: Optional[ChipStructure] = None
 
 
+class HardRiskAssessment(BaseModel):
+    """Confirmed material-risk assertion used by the timing guardrail."""
+
+    status: Literal["confirmed", "unconfirmed", "none"] = "none"
+    category: Optional[
+        Literal[
+            "delisting",
+            "fraud",
+            "adverse_audit",
+            "regulatory_action",
+            "earnings_collapse",
+            "default_or_insolvency",
+            "fundamental_reversal",
+        ]
+    ] = None
+    event_date: Optional[str] = None
+    evidence: Optional[str] = None
+    source: Optional[str] = None
+
+
 class Intelligence(BaseModel):
     """Intelligence block."""
 
@@ -89,6 +109,7 @@ class Intelligence(BaseModel):
     positive_catalysts: Optional[List[str]] = None
     earnings_outlook: Optional[str] = None
     sentiment_summary: Optional[str] = None
+    hard_risk_assessment: Optional[HardRiskAssessment] = None
 
 
 class SniperPoints(BaseModel):

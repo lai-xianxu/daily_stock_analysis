@@ -53,6 +53,7 @@ class MarketReviewRunResult:
 
     report: str
     market_review_payload: Dict[str, Any] = field(default_factory=dict)
+    notification_report: str = ""
 
 
 def _refresh_market_review_history_diagnostics(*, query_id: str) -> None:
@@ -306,6 +307,18 @@ def run_market_review(
                 language=getattr(runtime_config, "report_language", "zh"),
                 root_title=review_text["root_title"],
             )
+            scoped_markets = market_review_payload.get("markets")
+            if isinstance(scoped_markets, dict):
+                for scoped_payload in scoped_markets.values():
+                    if isinstance(scoped_payload, dict):
+                        scoped_payload["notification_markdown"] = (
+                            _render_single_market_notification_digest(scoped_payload)
+                        )
+            notification_report = _render_market_review_notification_markdown(
+                market_review_payload,
+                wrapper_title=review_text["push_title"],
+            )
+            market_review_payload["notification_markdown"] = notification_report
             markdown_report = _render_market_review_payload_markdown(
                 market_review_payload,
                 wrapper_title=review_text["root_title"],
@@ -365,7 +378,12 @@ def run_market_review(
                     wrapper_title=review_text["push_title"],
                 )
 
-                success = notifier.send(report_content, email_send_to_all=True, route_type="report")
+                success = notifier.send(
+                    report_content,
+                    email_send_to_all=True,
+                    route_type="report",
+                    channel_content_overrides={"feishu": notification_report},
+                )
                 _record_market_review_notification_run(
                     query_id=history_query_id,
                     channel="report",
@@ -423,6 +441,7 @@ def run_market_review(
                 return MarketReviewRunResult(
                     report=review_report,
                     market_review_payload=market_review_payload,
+                    notification_report=notification_report,
                 )
             if merge_notification:
                 return merge_markdown_report
@@ -509,6 +528,101 @@ def _render_market_review_payload_markdown(
     if wrapper_title:
         return f"{wrapper_title}\n\n{body}".strip()
     return body.strip()
+
+
+def _render_market_review_notification_markdown(
+    payload: Dict[str, Any],
+    *,
+    wrapper_title: Optional[str] = None,
+) -> str:
+    """Render the compact market digest used by Feishu text notifications."""
+
+    markets = payload.get("markets")
+    if isinstance(markets, dict) and markets:
+        parts = []
+        for market in _MARKET_REVIEW_REGION_ORDER:
+            market_payload = markets.get(market)
+            if not isinstance(market_payload, dict):
+                continue
+            heading = _get_market_review_market_heading(payload.get("language"), market)
+            rendered = _render_single_market_notification_digest(market_payload)
+            if rendered:
+                parts.append(f"{heading}\n\n{rendered}" if heading else rendered)
+        body = "\n\n---\n\n".join(parts)
+    else:
+        body = _render_single_market_notification_digest(payload)
+
+    if wrapper_title and body:
+        return f"{wrapper_title}\n\n{body}".strip()
+    return body.strip()
+
+
+def _render_single_market_notification_digest(payload: Dict[str, Any]) -> str:
+    digest = payload.get("notification_digest")
+    digest = digest if isinstance(digest, dict) else {}
+    language = normalize_report_language(payload.get("language"))
+    title = str(payload.get("title") or payload.get("date") or "").strip()
+
+    if language in ("en", "ko"):
+        labels = {
+            "state": "Market state",
+            "data": "Key data",
+            "indices": "Index structure",
+            "themes": "Leaders / laggards",
+            "maintain": "Maintain",
+            "downgrade": "Downgrade",
+            "defense": "Defense",
+            "risk": "Primary risk",
+            "limits": "Data limits",
+        }
+        disclaimer = "For reference only, not investment advice."
+    else:
+        labels = {
+            "state": "市场状态",
+            "data": "关键数据",
+            "indices": "指数结构",
+            "themes": "主线/弱项",
+            "maintain": "维持条件",
+            "downgrade": "降档条件",
+            "defense": "防守条件",
+            "risk": "最大风险",
+            "limits": "数据限制",
+        }
+        disclaimer = "仅供参考，不构成投资建议。"
+
+    state = str(digest.get("market_state") or "").strip()
+    stance = str(digest.get("stance") or "").strip()
+    if not state:
+        light = payload.get("market_light")
+        light = light if isinstance(light, dict) else {}
+        state = str(light.get("temperature_label") or light.get("label") or "N/A")
+        stance = stance or str(light.get("guidance") or "")
+
+    leaders = str(digest.get("leaders") or "N/A").strip()
+    laggards = str(digest.get("laggards") or "N/A").strip()
+    theme_separator = " / " if language in ("en", "ko") else "；弱项："
+    theme_text = f"{leaders}{theme_separator}{laggards}"
+    state_text = f"{state}；{stance}" if stance and language == "zh" else f"{state}; {stance}" if stance else state
+
+    lines = []
+    if title:
+        lines.append(f"## {title}")
+    lines.extend(
+        [
+            f"- **{labels['state']}**：{state_text}",
+            f"- **{labels['data']}**：{digest.get('key_data') or 'N/A'}",
+            f"- **{labels['indices']}**：{digest.get('index_structure') or 'N/A'}",
+            f"- **{labels['themes']}**：{theme_text}",
+            f"- **{labels['maintain']}**：{digest.get('maintain_trigger') or 'N/A'}",
+            f"- **{labels['downgrade']}**：{digest.get('downgrade_trigger') or 'N/A'}",
+            f"- **{labels['defense']}**：{digest.get('defense_trigger') or 'N/A'}",
+            f"- **{labels['risk']}**：{digest.get('primary_risk') or 'N/A'}",
+            f"- **{labels['limits']}**：{digest.get('data_limitations') or 'N/A'}",
+            "",
+            disclaimer,
+        ]
+    )
+    return "\n".join(lines).strip()
 
 
 def _render_market_review_merge_markdown(

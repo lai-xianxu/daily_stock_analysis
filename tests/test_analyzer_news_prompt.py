@@ -168,7 +168,9 @@ class AnalyzerNewsPromptTestCase(unittest.TestCase):
         self.assertIn("机器动能/量价证据可与资金派发、行业转弱或基本面走弱证据合并计数", current_prompt)
         self.assertIn("120日30%分位只是一项强位置证据，不是绝对开关", current_prompt)
         self.assertIn("`high_level_breakdown`", current_prompt)
-        self.assertIn("条件或否定表述不得触发清仓", current_prompt)
+        self.assertIn("至少三个独立衰竭维度", current_prompt)
+        self.assertIn("普通 `risk_alerts` 只用于展示", current_prompt)
+        self.assertIn("数据缺失", current_prompt)
         self.assertNotIn("### 适合减仓（20-39分）", current_prompt)
         self.assertNotIn("Canonical 评分与动作口径", current_prompt)
 

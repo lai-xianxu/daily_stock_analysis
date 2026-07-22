@@ -534,10 +534,13 @@ def _prime_daily_market_context(
     force_refresh: bool = False,
     target_date: Optional[date] = None,
     return_full_report: bool = False,
+    return_notification_report: bool = False,
     require_current_query_match: bool = False,
-) -> Union[str, Tuple[str, str]]:
+) -> Union[str, Tuple[str, str], Tuple[str, str, str]]:
     """Load/reuse the run's market context, avoiding unbounded background generation."""
     if no_market_review or not region:
+        if return_notification_report:
+            return "", "", ""
         return ("", "") if return_full_report else ""
 
     from src.services.daily_market_context import DailyMarketContextService
@@ -568,6 +571,8 @@ def _prime_daily_market_context(
 
     context = service.get_context(**get_context_kwargs)
     if context is None:
+        if return_notification_report:
+            return "", "", ""
         return ("", "") if return_full_report else ""
 
     # Runtime context generation is preload-only and must not replace the full
@@ -575,13 +580,30 @@ def _prime_daily_market_context(
     if context.source != "analysis_history" and not (
         require_current_query_match and context.source == "market_review_runtime"
     ):
+        if return_notification_report:
+            return "", "", ""
         return ("", "") if return_full_report else ""
 
     summary = str(getattr(context, "summary", ""))
     full_report = str(getattr(context, "full_report", "") or "")
+    notification_report = str(getattr(context, "notification_report", "") or "")
+    if return_notification_report:
+        return summary, full_report, notification_report
     if return_full_report:
         return summary, full_report
     return summary
+
+
+def _coerce_market_context_reports(value: Any) -> Tuple[str, str, str]:
+    """Accept the current three-field bundle and older two-field test doubles."""
+
+    if isinstance(value, tuple):
+        parts = [str(item or "") for item in value]
+        if len(parts) >= 3:
+            return parts[0], parts[1], parts[2]
+        if len(parts) == 2:
+            return parts[0], parts[1], ""
+    return str(value or ""), "", ""
 
 
 def _can_reuse_market_context_for_review(summary: str, region: str) -> bool:
@@ -625,6 +647,20 @@ def _market_review_report_text(review_result: Any) -> str:
     if isinstance(report, str):
         return report
     return review_result if isinstance(review_result, str) else ""
+
+
+def _market_review_notification_text(review_result: Any) -> str:
+    if review_result is None:
+        return ""
+    direct = getattr(review_result, "notification_report", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    payload = getattr(review_result, "market_review_payload", None)
+    if isinstance(payload, dict):
+        value = payload.get("notification_markdown")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _save_reused_market_review_report(
@@ -738,8 +774,10 @@ def run_full_analysis(
                 analysis_reference_time,
             )
         market_report = ""
+        market_notification_report = ""
         market_context_summary = ""
         market_context_full_report = ""
+        market_context_notification_report = ""
         market_context_generated_during_stock = False
         pipeline = StockAnalysisPipeline(
             config=config,
@@ -762,10 +800,7 @@ def run_full_analysis(
                 target_date=daily_market_context_target_date,
                 return_full_report=False,
             )
-            (
-                market_context_summary,
-                market_context_full_report,
-            ) = _prime_daily_market_context(
+            context_reports = _prime_daily_market_context(
                 config,
                 pipeline=pipeline,
                 region=market_review_region,
@@ -773,8 +808,14 @@ def run_full_analysis(
                 allow_generate=False,
                 target_date=daily_market_context_target_date,
                 return_full_report=True,
+                return_notification_report=True,
                 require_current_query_match=True,
             )
+            (
+                market_context_summary,
+                market_context_full_report,
+                market_context_notification_report,
+            ) = _coerce_market_context_reports(context_reports)
 
         # 1. 运行个股分析
         results = pipeline.run(
@@ -786,10 +827,7 @@ def run_full_analysis(
         )
 
         if should_use_daily_market_context and not market_context_summary:
-            (
-                market_context_summary,
-                market_context_full_report,
-            ) = _prime_daily_market_context(
+            context_reports = _prime_daily_market_context(
                 config,
                 pipeline=pipeline,
                 region=market_review_region,
@@ -797,8 +835,14 @@ def run_full_analysis(
                 allow_generate=False,
                 target_date=daily_market_context_target_date,
                 return_full_report=True,
+                return_notification_report=True,
                 require_current_query_match=True,
             )
+            (
+                market_context_summary,
+                market_context_full_report,
+                market_context_notification_report,
+            ) = _coerce_market_context_reports(context_reports)
             market_context_generated_during_stock = bool(market_context_summary)
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
@@ -827,6 +871,9 @@ def run_full_analysis(
             )
             if can_skip_market_review:
                 market_report = market_context_full_report or market_context_summary
+                market_notification_report = (
+                    market_context_notification_report or market_context_summary
+                )
                 logger.info(
                     "复盘上下文可复用，跳过重复大盘复盘并复用上下文内容。"
                 )
@@ -843,10 +890,13 @@ def run_full_analysis(
                     and not args.no_notify
                     and pipeline.notifier.is_available()
                 ):
+                    full_market_content = f"# 📈 大盘复盘\n\n{market_report}"
+                    compact_market_content = f"# 📈 大盘复盘\n\n{market_notification_report}"
                     if pipeline.notifier.send(
-                        f"# 📈 大盘复盘\n\n{market_report}",
+                        full_market_content,
                         email_send_to_all=True,
                         route_type="report",
+                        channel_content_overrides={"feishu": compact_market_content},
                     ):
                         logger.info("复用本轮大盘上下文推送大盘复盘成功")
                     else:
@@ -869,13 +919,11 @@ def run_full_analysis(
                     override_region=market_review_region,
                     query_id=query_id,
                     trigger_source=review_trigger_source,
+                    return_structured=True,
                 )
                 # 如果复盘仍未执行成功，再做一次复用历史/缓存读取（防止与并发运行竞态）。
                 if not review_result and should_use_daily_market_context:
-                    (
-                        market_context_summary,
-                        market_context_full_report,
-                    ) = _prime_daily_market_context(
+                    context_reports = _prime_daily_market_context(
                         config,
                         pipeline=pipeline,
                         region=market_review_region,
@@ -883,8 +931,14 @@ def run_full_analysis(
                         allow_generate=False,
                         target_date=daily_market_context_target_date,
                         return_full_report=True,
+                        return_notification_report=True,
                         require_current_query_match=True,
                     )
+                    (
+                        market_context_summary,
+                        market_context_full_report,
+                        market_context_notification_report,
+                    ) = _coerce_market_context_reports(context_reports)
                     can_reuse_market_context = _can_reuse_market_context_for_review(
                         market_context_summary,
                         market_review_region,
@@ -895,24 +949,43 @@ def run_full_analysis(
             # 如果有结果，赋值给 market_report 用于后续飞书文档生成
             if review_result:
                 market_report = _market_review_report_text(review_result)
+                market_notification_report = _market_review_notification_text(review_result)
             elif can_reuse_market_context:
                 market_report = market_context_full_report or market_context_summary
+                market_notification_report = (
+                    market_context_notification_report or market_context_summary
+                )
 
         # Issue #190: 合并推送（个股+大盘复盘）
         if merge_notification and (results or market_report) and not args.no_notify:
             parts = []
+            feishu_parts = []
             if market_report:
                 parts.append(f"# 📈 大盘复盘\n\n{market_report}")
+                compact_market = (
+                    market_notification_report
+                    or market_context_summary
+                    or market_report
+                )
+                feishu_parts.append(f"# 📈 大盘复盘\n\n{compact_market}")
             if results:
                 dashboard_content = pipeline.notifier.generate_aggregate_report(
                     results,
                     getattr(config, 'report_type', 'simple'),
                 )
                 parts.append(f"# 🚀 个股决策仪表盘\n\n{dashboard_content}")
+                feishu_dashboard = pipeline.notifier.generate_wechat_dashboard(results)
+                feishu_parts.append(f"# 🚀 个股决策仪表盘\n\n{feishu_dashboard}")
             if parts:
                 combined_content = "\n\n---\n\n".join(parts)
+                combined_feishu_content = "\n\n---\n\n".join(feishu_parts)
                 if pipeline.notifier.is_available():
-                    if pipeline.notifier.send(combined_content, email_send_to_all=True, route_type="report"):
+                    if pipeline.notifier.send(
+                        combined_content,
+                        email_send_to_all=True,
+                        route_type="report",
+                        channel_content_overrides={"feishu": combined_feishu_content},
+                    ):
                         logger.info("已合并推送（个股+大盘复盘）")
                     else:
                         logger.warning("合并推送失败")

@@ -456,6 +456,72 @@ def test_reuses_same_day_market_review_history_with_full_report_payload() -> Non
     run_review.assert_not_called()
 
 
+def test_reuses_notification_digest_from_market_review_history() -> None:
+    db = MagicMock()
+    record = _history_record(
+        created_at=datetime(2026, 6, 6, 9, 30),
+        region="cn",
+    )
+    snapshot = json.loads(record.context_snapshot)
+    snapshot["market_review_payload"]["notification_markdown"] = "# 大盘摘要\n\n- **市场状态**：偏防守"
+    record.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.get_analysis_history.return_value = [record]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="cn",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+        )
+
+    assert context is not None
+    assert context.notification_report == "# 大盘摘要\n\n- **市场状态**：偏防守"
+    run_review.assert_not_called()
+
+
+def test_reuses_region_scoped_digest_from_multi_market_history() -> None:
+    db = MagicMock()
+    record = _history_record(
+        created_at=datetime(2026, 6, 6, 9, 30),
+        region="cn,us",
+    )
+    snapshot = json.loads(record.context_snapshot)
+    cn_payload = snapshot["market_review_payload"]
+    cn_payload["region"] = "cn"
+    cn_payload["notification_markdown"] = "## A股摘要\n\n- **市场状态**：均衡"
+    snapshot["market_review_payload"] = {
+        "kind": "market_review",
+        "region": "cn,us",
+        "markets": {"cn": cn_payload},
+        "notification_markdown": "# 多市场摘要",
+    }
+    record.context_snapshot = json.dumps(snapshot, ensure_ascii=False)
+    db.get_analysis_history.return_value = [record]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="cn",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+        )
+
+    assert context is not None
+    assert context.notification_report == "## A股摘要\n\n- **市场状态**：均衡"
+    run_review.assert_not_called()
+
+
 def test_reuses_previous_trading_day_history_after_weekend() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = [

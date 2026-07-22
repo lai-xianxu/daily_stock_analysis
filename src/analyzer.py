@@ -525,44 +525,6 @@ _RISK_WARNING_PLACEHOLDER_TEXTS = {
     "无",
 }
 
-_STRUCTURAL_RISK_PHRASE_HINTS = (
-    "重大利空",
-    "重大风险",
-    "关键风险",
-    "减持",
-    "高位减持",
-    "退市",
-    "退市风险",
-    "停牌",
-    "重大问询",
-    "处罚",
-    "限售",
-    "违规",
-    "违规风险",
-    "诉讼",
-    "问询",
-    "监管",
-    "财务",
-    "审计",
-    "爆雷",
-    "暴雷",
-    "违约",
-    "违约风险",
-    "流动性危机",
-    "债务",
-    "清算",
-    "破产",
-    "重大变脸",
-    "major risk",
-    "material adverse",
-    "suspension",
-    "delisting",
-    "regulatory",
-    "downgrade",
-    "liquidity",
-    "default",
-)
-
 _CAPITAL_FLOW_UNAVAILABLE_STATUS = {
     "not_supported",
     "not supported",
@@ -1182,79 +1144,87 @@ def stabilize_decision_with_structure(
 
 
 def _has_structural_risk_alert(result: "AnalysisResult") -> bool:
-    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
-
-    risk_text = getattr(result, "risk_warning", "")
-    if _is_significant_structural_risk(risk_text):
-        return True
-
-    intelligence = dashboard.get("intelligence") if isinstance(dashboard, dict) else None
-    if isinstance(intelligence, dict):
-        risk_alerts = intelligence.get("risk_alerts")
-        if isinstance(risk_alerts, str):
-            if _is_significant_structural_risk(risk_alerts):
-                return True
-        elif isinstance(risk_alerts, (list, tuple, set)):
-            if any(_is_significant_structural_risk(item) for item in risk_alerts):
-                return True
-
-    core_conclusion = dashboard.get("core_conclusion") if isinstance(dashboard, dict) else None
-    if isinstance(core_conclusion, dict):
-        signal_type = str(core_conclusion.get("signal_type", "")).strip()
-        if _is_significant_structural_risk(signal_type):
-            return True
-    return False
+    return _material_timing_risk_assessment(result) is not None
 
 
-def _has_material_timing_risk_alert(result: "AnalysisResult") -> bool:
-    """Detect only material risks that may override a contrarian entry signal."""
-
-    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
-    timing_state = dashboard.get("timing_state")
-    if isinstance(timing_state, dict) and str(timing_state.get("phase")) == "structural_risk":
-        return True
-
-    texts: List[str] = [str(getattr(result, "risk_warning", "") or "")]
-    intelligence = dashboard.get("intelligence")
-    if isinstance(intelligence, dict):
-        alerts = intelligence.get("risk_alerts")
-        if isinstance(alerts, str):
-            texts.append(alerts)
-        elif isinstance(alerts, (list, tuple, set)):
-            texts.extend(str(item or "") for item in alerts)
-
-    hard_phrases = (
-        "重大利空",
-        "重大风险",
-        "退市风险",
-        "退市警示",
-        "财务造假",
-        "审计否定",
-        "无法表示意见",
+_HARD_RISK_CATEGORY_PHRASES = {
+    "delisting": ("退市风险警示", "终止上市", "强制退市", "实施st", "delisting risk"),
+    "fraud": ("财务造假", "fraud"),
+    "adverse_audit": ("审计否定", "否定意见", "无法表示意见", "adverse audit"),
+    "regulatory_action": ("监管立案", "重大处罚", "regulatory investigation", "major penalty"),
+    "earnings_collapse": (
+        "业绩崩塌",
         "业绩大幅恶化",
+        "利润大幅恶化",
         "连续亏损",
+        "earnings collapse",
+    ),
+    "default_or_insolvency": (
         "债务违约",
         "流动性危机",
         "破产",
         "清算",
-        "监管立案",
-        "重大处罚",
-        "基本面反转",
-        "核心逻辑反转",
-        "爆雷",
-        "暴雷",
-        "material adverse",
-        "delisting risk",
-        "fraud",
+        "default",
         "bankruptcy",
-        "default risk",
-        "fundamental reversal",
+        "insolvency",
+    ),
+    "fundamental_reversal": ("基本面反转", "核心逻辑反转", "fundamental reversal"),
+}
+
+_LEGACY_CONFIRMED_HARD_RISK_PATTERNS = (
+    re.compile(r"(?:已被|已|被|正式)(?:经\S*)?实施(?:退市风险警示|\s*st)", re.IGNORECASE),
+    re.compile(r"监管立案(?:已确认|已公告|已生效|通知已下发)", re.IGNORECASE),
+    re.compile(r"审计(?:意见)?(?:为|已出具|结论为)?(?:否定意见|无法表示意见)", re.IGNORECASE),
+    re.compile(r"(?:已发生|已经发生|正式进入).*(?:债务违约|破产|清算)", re.IGNORECASE),
+)
+
+
+def _material_timing_risk_assessment(result: "AnalysisResult") -> Optional[Dict[str, str]]:
+    """Return a validated hard-risk assertion, never generic display alerts."""
+
+    dashboard = result.dashboard if isinstance(result.dashboard, dict) else {}
+    intelligence = dashboard.get("intelligence")
+    assessment = intelligence.get("hard_risk_assessment") if isinstance(intelligence, dict) else None
+    if isinstance(assessment, dict):
+        status = str(assessment.get("status") or "none").strip().lower()
+        category = str(assessment.get("category") or "").strip().lower()
+        event_date = str(assessment.get("event_date") or "").strip()
+        evidence = str(assessment.get("evidence") or "").strip()
+        source = str(assessment.get("source") or "").strip()
+        if (
+            status == "confirmed"
+            and category in _HARD_RISK_CATEGORY_PHRASES
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", event_date)
+            and _is_meaningful_text(evidence)
+            and _is_meaningful_text(source)
+            and _evidence_confirms_hard_risk(category, evidence)
+        ):
+            return {
+                "category": category,
+                "event_date": event_date,
+                "evidence": evidence,
+                "source": source,
+            }
+
+    risk_warning = str(getattr(result, "risk_warning", "") or "")
+    for clause in _confirmed_risk_clauses(risk_warning):
+        if any(pattern.search(clause) for pattern in _LEGACY_CONFIRMED_HARD_RISK_PATTERNS):
+            return {
+                "category": "legacy_confirmed_event",
+                "event_date": "",
+                "evidence": clause,
+                "source": "legacy_risk_warning",
+            }
+    return None
+
+
+def _evidence_confirms_hard_risk(category: str, evidence: Any) -> bool:
+    phrases = _HARD_RISK_CATEGORY_PHRASES.get(category, ())
+    return any(
+        phrase in clause
+        for clause in _confirmed_risk_clauses(evidence)
+        for phrase in phrases
     )
-    for value in texts:
-        for clause in _confirmed_risk_clauses(value):
-            if any(phrase in clause for phrase in hard_phrases):
-                return True
-    return False
 
 
 def _confirmed_risk_clauses(value: Any) -> List[str]:
@@ -1267,21 +1237,53 @@ def _confirmed_risk_clauses(value: Any) -> List[str]:
         "未发现",
         "未见",
         "未确认",
+        "未检索到",
+        "未搜索到",
+        "未找到",
+        "未获取",
+        "未提供",
+        "未发生",
+        "未出现",
+        "未有",
+        "未恶化",
+        "未反转",
         "尚未",
         "尚无",
         "暂无",
+        "没有",
         "没有发现",
+        "并未",
+        "并不",
+        "并非",
         "不存在",
         "并无",
+        "无证据",
+        "无迹象",
         "无明确",
+        "无明显",
+        "无显著",
+        "无异常",
         "无重大",
         "无退市",
         "无处罚",
         "无监管",
+        "不涉及",
+        "不属于",
         "不构成",
         "否认",
+        "数据缺失",
+        "信息缺失",
+        "资料缺失",
+        "信息不足",
+        "无法判断",
+        "无法确认",
+        "缺少数据",
         "需核验",
+        "需核实",
         "有待核验",
+        "待核验",
+        "待核实",
+        "有待确认",
         "需关注",
         "若",
         "如果",
@@ -1289,17 +1291,35 @@ def _confirmed_risk_clauses(value: Any) -> List[str]:
         "如出现",
         "或出现",
         "可能",
+        "疑似",
+        "传闻",
         "防范",
         "警惕",
         "no material risk",
         "no material adverse",
         "no delisting",
         "no fraud",
+        "no evidence",
         "not confirmed",
         "without confirmed",
+        "has not",
+        "have not",
+        "did not",
+        "does not",
+        "is not",
+        "are not",
+        "unconfirmed",
+        "alleged",
+        "rumor",
         "if ",
+        "could ",
+        "would ",
         "may ",
         "might ",
+        "not found",
+        "not available",
+        "insufficient data",
+        "unable to determine",
     )
     clauses = re.split(r"[。；;！!，,\n]+", text)
     return [
@@ -1307,19 +1327,6 @@ def _confirmed_risk_clauses(value: Any) -> List[str]:
         for clause in clauses
         if clause.strip() and not any(marker in clause for marker in uncertain_markers)
     ]
-
-
-def _is_significant_structural_risk(value: Any) -> bool:
-    text = str(value or "").strip()
-    if not _is_meaningful_text(text):
-        return False
-
-    for clause in _confirmed_risk_clauses(text):
-        if any(keyword in clause for keyword in _STRUCTURAL_RISK_PHRASE_HINTS):
-            return True
-        if "重大" in clause and "风险" in clause:
-            return True
-    return False
 
 
 def _sync_stability_dashboard_fields(result: "AnalysisResult") -> None:
@@ -2391,9 +2398,6 @@ def _timing_external_confirmation_dimensions(
             "流入",
             "承接",
             "企稳",
-            "未恶化",
-            "未反转",
-            "未发生重大",
             "健康",
             "低估",
             "修复",
@@ -2442,7 +2446,8 @@ def _timing_external_confirmation_dimensions(
 
     dimensions: set[str] = set()
     for reason in reasons:
-        text = str(reason or "").strip().casefold()
+        asserted = _confirmed_risk_clauses(reason)
+        text = " ".join(asserted).casefold()
         if not text or not any(cue in text for cue in cues):
             continue
         for dimension, terms in dimension_terms.items():
@@ -2509,14 +2514,48 @@ def _timing_model_confirmed_signal(
         required = 3 if exit_position == "soft" else 2
         if len(combined) < required or not (combined - {"volume"}):
             return None
-        if original_code == "exit" and (
-            exit_position == "extreme"
-            or (exit_position == "strong" and len(combined) >= 3)
+        if (
+            original_code == "exit"
+            and str(timing_state.get("data_quality") or "") == "full"
+            and bool(str(timing_state.get("completed_bar_date") or "").strip())
+            and exit_position == "extreme"
+            and len(combined) >= 3
+            and bool(combined - {"volume"})
         ):
             return "exit", "advancing_exhaustion", external
         return "reduce", "advancing_weakening", external
 
     return None
+
+
+def _timing_technical_exit_allowed(timing_state: Dict[str, Any]) -> bool:
+    """Apply the single technical-exit threshold to every decision path."""
+
+    if str(timing_state.get("data_quality") or "") != "full":
+        return False
+    completed_bar_date = str(timing_state.get("completed_bar_date") or "").strip()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", completed_bar_date):
+        return False
+
+    metrics = timing_state.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    exit_position = str(metrics.get("exit_position_strength") or "")
+    if not exit_position:
+        exit_position = "extreme" if str(timing_state.get("price_zone")) == "extreme_high" else "none"
+    if exit_position != "extreme":
+        return False
+
+    dimensions: set[str] = set()
+    for key in ("weakening_dimensions", "external_confirmation_dimensions"):
+        raw_dimensions = timing_state.get(key)
+        if not isinstance(raw_dimensions, (list, tuple, set)):
+            continue
+        dimensions.update(
+            str(item).strip()
+            for item in raw_dimensions
+            if str(item).strip()
+        )
+    return len(dimensions) >= 3 and bool(dimensions - {"volume"})
 
 
 def _timing_reference_points_for_signal(
@@ -2579,27 +2618,44 @@ def _apply_timing_state_guardrail(
         strategy = _build_fallback_strategy_signal(result, dashboard)
 
     original_code = str(strategy.get("signal_code") or "watch")
-    hard_risk = _has_material_timing_risk_alert(result)
-    decision_phase = str(timing_state.get("phase") or "unknown")
+    risk_assessment = _material_timing_risk_assessment(result)
+    hard_risk = risk_assessment is not None
+    source_phase = str(timing_state.get("phase") or "unknown")
+    decision_phase = source_phase
     if hard_risk:
         target_code = "exit"
-        timing_state["phase"] = "structural_risk"
-        timing_state["suggested_signal"] = "exit"
         decision_phase = "structural_risk"
-        timing_state["summary"] = _localized_text(
-            language,
-            en="A material fundamental or structural risk overrides technical timing",
-            zh="重大基本面或结构性风险优先于技术择时",
-            ko="중대한 펀더멘털 또는 구조적 위험이 기술적 타이밍보다 우선합니다",
-        )
+        strategy["decision_override"] = {
+            "applied": True,
+            "reason_code": "confirmed_hard_risk",
+            "source_phase": source_phase,
+            "final_phase": decision_phase,
+            "category": str((risk_assessment or {}).get("category") or ""),
+            "event_date": str((risk_assessment or {}).get("event_date") or ""),
+            "evidence": str((risk_assessment or {}).get("evidence") or ""),
+            "source": str((risk_assessment or {}).get("source") or ""),
+        }
     else:
-        externally_confirmed = _timing_model_confirmed_signal(timing_state, strategy)
-        if externally_confirmed is not None:
-            target_code, decision_phase, external_dimensions = externally_confirmed
-            timing_state["external_confirmation_dimensions"] = sorted(external_dimensions)
+        strategy.pop("decision_override", None)
+        if source_phase == "structural_risk":
+            target_code = "watch"
+            decision_phase = "unknown"
         else:
-            allowed = _timing_allowed_signals(timing_state)
-            target_code = original_code if original_code in allowed else _timing_default_signal(timing_state)
+            externally_confirmed = _timing_model_confirmed_signal(timing_state, strategy)
+            if externally_confirmed is not None:
+                target_code, decision_phase, external_dimensions = externally_confirmed
+                timing_state["external_confirmation_dimensions"] = sorted(external_dimensions)
+            else:
+                allowed = _timing_allowed_signals(timing_state)
+                target_code = original_code if original_code in allowed else _timing_default_signal(timing_state)
+
+        if target_code == "exit" and not _timing_technical_exit_allowed(timing_state):
+            target_code = "reduce"
+            decision_phase = (
+                "high_level_breakdown"
+                if source_phase == "high_level_breakdown"
+                else "advancing_weakening"
+            )
 
     definition = strategy_signal_definition(target_code)
     if definition is None:
@@ -2607,7 +2663,7 @@ def _apply_timing_state_guardrail(
     if definition is None:
         return False
 
-    phase = str(timing_state.get("phase") or "unknown")
+    phase = source_phase
     strategy["signal_code"] = definition.code
     strategy["signal_label"] = definition.label_for_language(language)
     strategy["cycle_phase"] = decision_phase
@@ -2617,7 +2673,8 @@ def _apply_timing_state_guardrail(
         definition.code,
         hard_risk=hard_risk,
     )
-    timing_state["reference_points"] = references
+    if not hard_risk:
+        timing_state["reference_points"] = references
     strategy["reference_points"] = references
 
     reasons = list(strategy.get("reasons") or [])
@@ -2625,12 +2682,20 @@ def _apply_timing_state_guardrail(
     if isinstance(machine_evidence, list):
         reasons.extend(str(item).strip() for item in machine_evidence if str(item).strip())
     if original_code != definition.code:
-        correction = _localized_text(
-            language,
-            en=f"[Cycle constraint] {original_code} conflicts with {phase}; corrected to {definition.code}",
-            zh=f"[周期约束] {original_code} 与阶段 {phase} 冲突，已校正为 {definition.code}",
-            ko=f"[주기 제약] {original_code} 신호가 {phase} 단계와 충돌하여 {definition.code}(으)로 수정했습니다",
-        )
+        if hard_risk:
+            correction = _localized_text(
+                language,
+                en=f"[Risk override] Confirmed material risk overrides {original_code} with exit",
+                zh=f"[风险覆盖] 已确认重大风险，将 {original_code} 校正为 exit",
+                ko=f"[위험 우선] 확인된 중대 위험으로 {original_code} 신호를 exit로 수정했습니다",
+            )
+        else:
+            correction = _localized_text(
+                language,
+                en=f"[Cycle constraint] {original_code} conflicts with {phase}; corrected to {definition.code}",
+                zh=f"[周期约束] {original_code} 与阶段 {phase} 冲突，已校正为 {definition.code}",
+                ko=f"[주기 제약] {original_code} 신호가 {phase} 단계와 충돌하여 {definition.code}(으)로 수정했습니다",
+            )
         reasons.insert(0, correction)
         strategy["summary"] = correction
     elif not _is_meaningful_text(strategy.get("summary")):
@@ -2890,7 +2955,14 @@ class GeminiAnalyzer:
             "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
             "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
             "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
-            "sentiment_summary": "舆情情绪一句话总结"
+            "sentiment_summary": "舆情情绪一句话总结",
+            "hard_risk_assessment": {
+                "status": "confirmed/unconfirmed/none",
+                "category": "有效硬风险类别或null",
+                "event_date": "YYYY-MM-DD或空字符串",
+                "evidence": "已确认事实或空字符串",
+                "source": "公告、财报或新闻来源或空字符串"
+            }
         },
 
         "battle_plan": {
@@ -3095,7 +3167,14 @@ class GeminiAnalyzer:
             "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
             "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
             "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
-            "sentiment_summary": "舆情情绪一句话总结"
+            "sentiment_summary": "舆情情绪一句话总结",
+            "hard_risk_assessment": {
+                "status": "confirmed/unconfirmed/none",
+                "category": "有效硬风险类别或null",
+                "event_date": "YYYY-MM-DD或空字符串",
+                "evidence": "已确认事实或空字符串",
+                "source": "公告、财报或新闻来源或空字符串"
+            }
         },
 
         "battle_plan": {
@@ -3161,7 +3240,7 @@ class GeminiAnalyzer:
 
 ## 周期阶段与信号标准
 
-- `exit`：已确认的重大基本面/结构风险；或极高位双重衰竭；或长期相对高位出现至少三类独立破位证据。
+- `exit`：结构化确认的重大基本面/结构风险；或综合极高位、完整已收盘日线与至少三类独立衰竭证据同时成立，其中至少一类不是成交量。
 - `reduce`：综合位置偏高且上涨转弱，强高位至少两类证据，55%-70%偏高软区至少三类证据，且至少一类不是成交量。
 - `accumulate`：下跌至极低位、极致缩量，并有衰竭/底背离/波动收敛/承接改善确认。
 - `low_buy`：仍处下跌过程、综合位置偏低、成交量收缩、跌速未加快；30%-45%偏低软区需要额外独立确认，不要求先反转。
@@ -3184,7 +3263,7 @@ class GeminiAnalyzer:
 - 高位和上涨阶段禁止低吸/抢筹；加速下跌或放量破位禁止低吸/抢筹。
 - 上涨缩量或价格极高单一证据不能触发减仓/清仓。
 - 资金流缺失只降低置信度，不得自动把有效低吸/抢筹降级为观察。
-- 只有已确认的重大基本面或结构风险可以否决超跌买入；条件、可能、否定或待核验文字不得触发硬风险。
+- 只有 `hard_risk_assessment` 状态、类别、日期、肯定证据和来源均通过校验的重大风险可以否决超跌买入；`risk_alerts` 只展示，条件、可能、否定、数据缺失或待核验文字不得触发硬风险。
 - 低吸/抢筹展示介入区与失效位；减仓/清仓展示压力或退出区；观察展示箱体；持有展示防守位。禁止所有状态都输出买点。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。

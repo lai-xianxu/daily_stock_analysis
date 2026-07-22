@@ -824,7 +824,171 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
                 "turnover_unit": self._get_turnover_unit_label(),
             }
 
+        payload["notification_digest"] = self._build_notification_digest(
+            overview,
+            report,
+            light,
+        )
+
         return payload
+
+    def _build_notification_digest(
+        self,
+        overview: MarketOverview,
+        report: str,
+        market_light: Optional[Dict[str, Any]],
+    ) -> Dict[str, str]:
+        """Build the compact, structured contract used by text notifications."""
+
+        english = self._get_review_language() == "en"
+        light = market_light if isinstance(market_light, dict) else {}
+        state_fallback = "Market data is mixed" if english else "市场信号分化"
+        state = self._first_blockquote_text(report) or (
+            f"{light.get('temperature_label', '')} / {light.get('label', '')}".strip(" /")
+            or state_fallback
+        )
+        stance = str(light.get("guidance") or ("Wait for confirmation." if english else "等待量价确认。"))
+
+        breadth_available = self.profile.has_market_stats
+        dimensions = light.get("dimensions")
+        breadth_dimension = dimensions.get("breadth") if isinstance(dimensions, dict) else None
+        if isinstance(breadth_dimension, dict) and "available" in breadth_dimension:
+            breadth_available = breadth_available and bool(breadth_dimension.get("available"))
+
+        if breadth_available:
+            if english:
+                key_data = (
+                    f"Advancers/decliners/flat {overview.up_count}/{overview.down_count}/{overview.flat_count}; "
+                    f"limit-up/down {overview.limit_up_count}/{overview.limit_down_count}; "
+                    f"turnover {overview.total_amount:.0f} {self._get_turnover_unit_label()}"
+                )
+            else:
+                key_data = (
+                    f"上涨/下跌/平盘 {overview.up_count}/{overview.down_count}/{overview.flat_count}，"
+                    f"涨停/跌停 {overview.limit_up_count}/{overview.limit_down_count}，"
+                    f"成交额 {overview.total_amount:.0f}{self._get_turnover_unit_label()}"
+                )
+        else:
+            key_data = "Structured breadth data unavailable" if english else "市场宽度与成交汇总数据不可用"
+
+        indices = list(overview.indices or [])
+        selected_indices = indices[:1]
+        for item in sorted(indices, key=lambda value: abs(value.change_pct or 0), reverse=True):
+            if item not in selected_indices:
+                selected_indices.append(item)
+            if len(selected_indices) >= 4:
+                break
+        index_structure = "；".join(
+            f"{item.name} {item.change_pct:+.2f}%" for item in selected_indices
+        ) or ("Index data unavailable" if english else "指数数据不可用")
+
+        leaders = self._format_ranking_summary(overview.top_sectors, limit=3)
+        laggards = self._format_ranking_summary(overview.bottom_sectors, limit=2)
+        if not leaders:
+            leaders = "Unavailable" if english else "暂无可靠数据"
+        if not laggards:
+            laggards = "Unavailable" if english else "暂无可靠数据"
+
+        if english:
+            maintain_fallback = "Leadership holds and major indices avoid a sharp reversal"
+            downgrade_fallback = "Turnover contracts while leadership breadth narrows"
+            defense_fallback = "Core indices reverse and downside breadth expands"
+        else:
+            maintain_fallback = "成交与主线承接延续，核心指数不出现明显冲高回落"
+            downgrade_fallback = "指数仍强但成交收缩，主线分化扩大"
+            defense_fallback = "核心指数冲高回落，涨停退潮且跌停增加"
+
+        digest = {
+            "market_state": self._compact_news_text(state, limit=100),
+            "stance": self._compact_news_text(stance, limit=65),
+            "key_data": self._compact_news_text(key_data, limit=90),
+            "index_structure": self._compact_news_text(index_structure, limit=95),
+            "leaders": self._compact_news_text(leaders, limit=75),
+            "laggards": self._compact_news_text(laggards, limit=55),
+            "maintain_trigger": self._compact_news_text(
+                self._extract_condition_block(report, "offense" if english else "进攻") or maintain_fallback,
+                limit=85,
+            ),
+            "downgrade_trigger": self._compact_news_text(
+                self._extract_condition_block(report, "balanced" if english else "均衡") or downgrade_fallback,
+                limit=85,
+            ),
+            "defense_trigger": self._compact_news_text(
+                self._extract_condition_block(report, "defense" if english else "防守") or defense_fallback,
+                limit=85,
+            ),
+            "primary_risk": self._compact_news_text(
+                self._extract_primary_risk(report)
+                or ("Leadership reversal after an extended move" if english else "强势方向冲高后的分化与兑现"),
+                limit=100,
+            ),
+            "data_limitations": self._digest_data_limitations(overview, light, english=english),
+        }
+        return digest
+
+    @staticmethod
+    def _first_blockquote_text(report: str) -> str:
+        for line in str(report or "").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(">"):
+                return stripped.lstrip(">").strip().replace("**", "")
+        return ""
+
+    @staticmethod
+    def _extract_condition_block(report: str, label: str) -> str:
+        marker = r"(?:[-*]|\d+[.)])?\s*"
+        pattern = re.compile(
+            rf"(?:^|\n)\s*{marker}{re.escape(label)}(?:\s+conditions?)?\s*[：:]\s*(.*?)"
+            rf"(?=\n\s*{marker}(?:进攻|均衡|防守|失效|offense|balanced|defense|invalidation)"
+            rf"(?:\s+conditions?)?\s*[：:]|\n###|\Z)",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        match = pattern.search(str(report or ""))
+        if not match:
+            return ""
+        items = []
+        for line in match.group(1).splitlines():
+            value = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip(" ；;。.")
+            if value:
+                items.append(value)
+            if len(items) >= 2:
+                break
+        return "；".join(items)
+
+    @staticmethod
+    def _extract_primary_risk(report: str) -> str:
+        match = re.search(
+            r"###\s*(?:七、|\d+[.)]\s*)?(?:风险提示|Risk Alerts)(.*?)(?=\n###|\Z)",
+            str(report or ""),
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return ""
+        for line in match.group(1).splitlines():
+            value = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+            if value:
+                return value
+        return ""
+
+    def _digest_data_limitations(
+        self,
+        overview: MarketOverview,
+        market_light: Dict[str, Any],
+        *,
+        english: bool,
+    ) -> str:
+        limitations = []
+        if str(market_light.get("data_quality") or "") not in {"", "ok"}:
+            limitations.append("partial structured data" if english else "结构化数据不完整")
+        dimensions = market_light.get("dimensions")
+        breadth = dimensions.get("breadth") if isinstance(dimensions, dict) else None
+        if self.profile.has_market_stats and isinstance(breadth, dict) and not breadth.get("available", True):
+            limitations.append("market breadth unavailable" if english else "市场宽度数据缺失")
+        if self.profile.has_sector_rankings and not overview.top_sectors:
+            limitations.append("sector rankings unavailable" if english else "板块榜缺失")
+        if not limitations:
+            return "None material" if english else "无重大缺失"
+        return self._compact_news_text("; ".join(limitations), limit=55)
 
     def _supports_market_light(self) -> bool:
         return self.region in MARKET_LIGHT_REGIONS
